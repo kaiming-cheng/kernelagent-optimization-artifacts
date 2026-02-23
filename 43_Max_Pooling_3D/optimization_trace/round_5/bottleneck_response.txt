@@ -1,0 +1,26 @@
+[
+    {
+        "category": "memory",
+        "summary": "Kernel is memory-bound with poor memory access efficiency due to non-coalesced loads and high L2 cache miss rate",
+        "reasoning": "The roofline analysis confirms memory bottleneck with 99.1% Memory SOL vs 76.6% Compute SOL. DRAM throughput at 65.36% of peak with L1 achieving 99.23% throughput indicates memory subsystem saturation. The long scoreboard stalls at 58.52% show warps waiting on memory operations, while only 23.64% of bytes per sector for global loads indicates severe memory access inefficiency.",
+        "root_causes": [
+            {
+                "cause": "Non-coalesced global memory access pattern due to 3D pooling window traversal causing scattered reads across input tensor",
+                "evidence": [
+                    {"metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct", "value": 23.64, "interpretation": "Only 23.64% of loaded bytes are actually used, meaning ~76% of memory bandwidth is wasted on unused data in each 32-byte sector"},
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 58.52, "interpretation": "58.52% of warp stalls are due to waiting for memory operations, confirming memory latency is the primary stall reason"}
+                ]
+            },
+            {
+                "cause": "High L2 cache miss rate causing excessive DRAM traffic for the 3D sliding window access pattern",
+                "evidence": [
+                    {"metric": "lts__t_sector_hit_rate.pct", "value": 42.5, "interpretation": "L2 cache hit rate of only 42.5% means majority of accesses go to DRAM, increasing memory pressure"},
+                    {"metric": "l1tex__t_sector_hit_rate.pct", "value": 84.14, "interpretation": "While L1 has good hit rate at 84%, the L2 misses still cause significant DRAM traffic at 4.16GB read vs 0.49GB write"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Restructure the kernel to process output elements in tiles that maximize spatial locality - group consecutive output positions that share input data in the pooling window, and use shared memory to cache input tiles before computing max values across multiple output elements", "rationale": "This would improve memory coalescing by loading contiguous input regions into shared memory once and reusing them for multiple outputs, reducing redundant DRAM accesses and improving the bytes-per-sector efficiency from 23.64% closer to 100%"}
+        ]
+    }
+]

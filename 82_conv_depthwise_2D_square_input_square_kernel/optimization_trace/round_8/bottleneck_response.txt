@@ -1,0 +1,26 @@
+[
+    {
+        "category": "memory",
+        "summary": "Memory bandwidth bottleneck with 70% DRAM utilization and severe long scoreboard stalls from global memory latency",
+        "reasoning": "The kernel achieves 70.38% DRAM throughput and 92.12% compute-memory throughput, indicating memory-bound behavior. The dominant stall reason is long scoreboard at 57.37%, which indicates warps are waiting for global memory operations to complete. Despite high L1 hit rate (88.62%), the inefficient memory access pattern with only 46.71% global load efficiency wastes bandwidth.",
+        "root_causes": [
+            {
+                "cause": "Poor global memory load efficiency causing wasted bandwidth",
+                "evidence": [
+                    {"metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct", "value": 46.71, "interpretation": "Less than half of loaded bytes are actually used, indicating uncoalesced or misaligned memory accesses"},
+                    {"metric": "dram__bytes_read.sum", "value": 1073834240, "interpretation": "Reading ~1GB but only ~47% is useful data, wasting significant memory bandwidth"}
+                ]
+            },
+            {
+                "cause": "High memory latency stalls blocking warp execution",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 57.37, "interpretation": "Warps spend 57% of active time waiting for global memory operations, indicating insufficient latency hiding"},
+                    {"metric": "dram__throughput.avg.pct_of_peak_sustained_elapsed", "value": 70.38, "interpretation": "DRAM throughput at 70% of peak suggests memory subsystem is heavily utilized but not fully saturated due to access patterns"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Restructure memory access to load contiguous BLOCK_W elements per warp using vectorized loads (tl.load with proper alignment) and ensure each thread loads consecutive addresses to achieve coalesced 128-byte transactions", "rationale": "Improving global load efficiency from 46.71% to near 100% would nearly double effective memory bandwidth, reducing both total memory traffic and long scoreboard stalls by allowing more data per memory transaction"}
+        ]
+    }
+]

@@ -1,0 +1,35 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory-bound with 99.7% memory SOL and severe long scoreboard stalls due to inefficient global memory access patterns",
+    "reasoning": "The roofline analysis confirms memory-bound execution at 99.7% memory SOL vs 73.8% compute SOL. The kernel achieves only 23.64% memory efficiency (smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct) indicating poor coalescing, and 62.87% of warp stalls are due to long scoreboard waits (memory latency). Despite 84% L1 hit rate, the scattered 3D pooling access pattern causes inefficient 128-byte sector utilization.",
+    "root_causes": [
+      {
+        "cause": "Poor global memory coalescing due to strided 3D access pattern in pooling window traversal",
+        "evidence": [
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 23.64,
+            "interpretation": "Only 23.64% of each 128-byte memory sector is utilized, meaning ~76% of fetched data is wasted due to non-contiguous access patterns across the 3D pooling window"
+          }
+        ]
+      },
+      {
+        "cause": "High memory latency stalls from scattered access pattern causing long scoreboard waits",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 62.87,
+            "interpretation": "62.87% of warp stalls are waiting for global memory loads, indicating memory latency is the primary bottleneck despite high L1 cache hit rate of 84%"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Reorganize the kernel to process spatially contiguous output tiles (e.g., 2D tiles in OH x OW dimensions) within each thread block, using shared memory to prefetch and reuse input data across the pooling window. This improves coalescing by having adjacent threads access adjacent memory locations and reduces redundant global memory fetches.",
+        "rationale": "Tile-based processing with shared memory staging will improve memory coalescing from 23.64% toward 100% by ensuring threads in a warp access contiguous memory addresses, and reduce long scoreboard stalls by hiding memory latency through data reuse in fast shared memory"
+      }
+    ]
+  }
+]

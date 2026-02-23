@@ -1,0 +1,27 @@
+[
+    {
+        "category": "underutilized",
+        "summary": "Severe occupancy limitation from excessive register usage causing long memory stalls",
+        "reasoning": "The kernel achieves only 6.25% warp occupancy and 41.4% memory bandwidth utilization despite being memory-bound. With 168 registers per thread, occupancy is limited to just 3 blocks per SM (launch__occupancy_limit_registers=3). The dominant stall reason is long scoreboard waits (54.51%), indicating threads are blocked waiting for global memory loads that cannot be hidden due to insufficient concurrent warps.",
+        "root_causes": [
+            {
+                "cause": "Excessive register usage (168 per thread) severely limits occupancy to 3 blocks per SM",
+                "evidence": [
+                    {"metric": "launch__registers_per_thread", "value": 168, "interpretation": "Far exceeds the ~32 registers needed for full occupancy; limits concurrent blocks"},
+                    {"metric": "launch__occupancy_limit_registers", "value": 3, "interpretation": "Only 3 blocks can run concurrently per SM due to register pressure"},
+                    {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active", "value": 6.25, "interpretation": "Extremely low active warp percentage, insufficient to hide memory latency"}
+                ]
+            },
+            {
+                "cause": "Long memory latency stalls dominate due to insufficient warp-level parallelism",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 54.51, "interpretation": "Over half of stall cycles are waiting for global memory loads to complete"},
+                    {"metric": "l1tex__t_sector_hit_rate.pct", "value": 0, "interpretation": "Zero L1 cache hits means all loads go to L2/DRAM, increasing latency"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Reduce BLOCK_SIZE_M from 32 to 8-16 and BLOCK_SIZE_K from 512 to 128-256 to decrease register pressure, and increase num_warps to 8 to improve occupancy while using shared memory to cache x vector tiles", "rationale": "Smaller block sizes reduce the accumulator and tile storage requirements, lowering register count below 64 to allow more concurrent blocks. Caching x in shared memory reduces redundant global loads and improves L1 utilization, while more warps help hide remaining memory latency."}
+        ]
+    }
+]

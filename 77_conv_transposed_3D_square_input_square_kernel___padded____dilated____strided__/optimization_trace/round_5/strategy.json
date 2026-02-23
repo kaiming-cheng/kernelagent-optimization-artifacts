@@ -1,0 +1,45 @@
+[
+  {
+    "category": "underutilized",
+    "summary": "Severe underutilization with low occupancy and memory stalls despite high L1 cache hit rate",
+    "reasoning": "The kernel shows only 12.5% warp active percentage and 14.45% SM throughput, indicating severe underutilization. While the roofline suggests memory-bound behavior (75.8% memory SOL), the actual DRAM throughput is only 1.15% of peak, with 98.73% L1 cache hit rate. The primary stall reason is long scoreboard (29.43%), indicating warps are waiting for memory operations to complete. The occupancy is severely limited by register usage (166 registers per thread, limit_registers=1) and shared memory allocation.",
+    "root_causes": [
+      {
+        "cause": "Excessive register usage limiting occupancy",
+        "evidence": [
+          {
+            "metric": "launch__registers_per_thread",
+            "value": 166,
+            "interpretation": "166 registers per thread far exceeds typical limits, causing occupancy_limit_registers=1 meaning only 1 warp can be scheduled per SM"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 12.5,
+            "interpretation": "Only 12.5% of warps are active, severely limiting parallelism and latency hiding"
+          }
+        ]
+      },
+      {
+        "cause": "Poor memory access efficiency causing long scoreboard stalls",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 29.43,
+            "interpretation": "29.43% of stalls are due to waiting for memory operations, indicating inefficient memory access patterns"
+          },
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 7.4,
+            "interpretation": "Only 7.4% efficiency in global memory loads indicates severe uncoalesced access patterns, wasting memory bandwidth"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Reduce register pressure by splitting the kernel into smaller phases, using shared memory to stage intermediate results, and reducing BLOCK_S or BLOCK_OC tile sizes. Consider using register spilling hints or reducing the accumulator precision temporarily.",
+        "rationale": "With 166 registers per thread, occupancy is catastrophically low. Reducing to ~64 registers would allow 4x more concurrent warps, dramatically improving latency hiding and overall throughput. The 7.4% global load efficiency also suggests restructuring memory access patterns to improve coalescing."
+      }
+    ]
+  }
+]

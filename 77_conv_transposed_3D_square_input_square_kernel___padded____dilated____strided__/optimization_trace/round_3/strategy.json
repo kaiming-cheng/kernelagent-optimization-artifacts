@@ -1,0 +1,50 @@
+[
+  {
+    "category": "underutilized",
+    "summary": "Severe underutilization due to low occupancy from excessive register usage and memory access stalls",
+    "reasoning": "Despite the roofline showing memory as the bottleneck, the actual DRAM throughput is only 1.15% of peak (28 GB/s vs 3900 GB/s peak). The kernel has very low warp occupancy (12.5%) due to 166 registers per thread limiting occupancy to 1 block per SM. The high L1 hit rate (98.74%) masks the memory inefficiency, but 29.45% of stalls are from long scoreboard waits indicating memory latency issues. The GPU compute throughput is only 14.45% of peak, showing severe underutilization.",
+    "root_causes": [
+      {
+        "cause": "Excessive register usage (166 per thread) severely limits occupancy to 1 block per SM",
+        "evidence": [
+          {
+            "metric": "launch__registers_per_thread",
+            "value": 166,
+            "interpretation": "166 registers far exceeds the ~32 registers needed for full occupancy, limiting to only 1 block per SM"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 12.5,
+            "interpretation": "Only 12.5% warp occupancy means most SM resources are idle"
+          },
+          {
+            "metric": "launch__occupancy_limit_registers",
+            "value": 1,
+            "interpretation": "Registers are the primary occupancy limiter"
+          }
+        ]
+      },
+      {
+        "cause": "Poor global memory access pattern with only 7.4% efficiency and long memory latency stalls",
+        "evidence": [
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 7.4,
+            "interpretation": "Only 7.4% of loaded data is actually used, indicating severe uncoalesced access or wasted bandwidth"
+          },
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 29.45,
+            "interpretation": "29.45% of stalls waiting for memory operations indicates latency-bound execution"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Reduce register pressure by using smaller BLOCK_S/BLOCK_OC tile sizes, splitting the kernel into multiple passes, or using explicit register spilling with shared memory to improve occupancy above 1 block per SM",
+        "rationale": "Increasing occupancy from 12.5% will allow more warps to hide memory latency and improve overall GPU utilization; targeting 32-64 registers per thread would allow 4-8x more concurrent blocks"
+      }
+    ]
+  }
+]

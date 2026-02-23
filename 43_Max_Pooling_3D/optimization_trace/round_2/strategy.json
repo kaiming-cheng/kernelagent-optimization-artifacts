@@ -1,0 +1,45 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory-bound with severe long scoreboard stalls due to inefficient memory access patterns and low memory bandwidth utilization",
+    "reasoning": "The roofline analysis confirms memory bottleneck (Memory SOL: 99.7%). Despite high L1 throughput (99.79%), DRAM throughput is only 33.76% of peak (825 GB/s vs 3900 GB/s theoretical). The dominant stall reason is long scoreboard waits (79.88%), indicating warps are blocked waiting for memory operations to complete. The low global load efficiency (24.87% bytes per sector) shows severe memory access inefficiency.",
+    "root_causes": [
+      {
+        "cause": "Poor memory coalescing with only 24.87% of loaded bytes being useful, causing 4x memory traffic amplification",
+        "evidence": [
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 24.87,
+            "interpretation": "Only ~25% of fetched memory is actually used, meaning 75% of bandwidth is wasted on unused data within cache lines"
+          },
+          {
+            "metric": "dram__bytes_read.sum",
+            "value": 4241235712,
+            "interpretation": "4.24GB read from DRAM, significantly more than the useful data due to uncoalesced access patterns"
+          }
+        ]
+      },
+      {
+        "cause": "Warps stalled waiting for memory operations due to long latency memory accesses not being hidden",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 79.88,
+            "interpretation": "Nearly 80% of stall cycles are due to waiting for memory operations, indicating memory latency is not being hidden"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 73.28,
+            "interpretation": "Occupancy is reasonable but insufficient to hide the long memory latencies from scattered access patterns"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Reorganize the kernel to process contiguous memory along the innermost dimension (W) by making BLOCK_OW the primary blocking dimension and ensuring strideW=1 accesses. Consider transposing the channel and spatial dimensions in the blocking strategy to achieve coalesced 128-byte transactions.",
+        "rationale": "The current access pattern with c_2d * strideC + w_idx_safe * strideW creates strided accesses across channels. By prioritizing contiguous width-dimension accesses and ensuring threads within a warp access consecutive memory addresses, memory coalescing can improve from 25% to near 100%, effectively quadrupling useful bandwidth."
+      }
+    ]
+  }
+]

@@ -1,0 +1,157 @@
+Looking at the problem, I need to optimize a matrix-vector multiplication kernel for H100. The current implementation has issues with memory latency stalls (60% long scoreboard stalls) and poor cache utilization (14.8% L1 hit rate, 1.6% L2 hit rate).
+
+Key observations:
+1. Matrix A is 2048 x 1048576 (2GB in bf16), vector B is 1048576 x 1
+2. This is heavily memory-bound - each element of A is read once, B should be reused across rows
+3. The current v3 kernel processes 4 rows per block with BLOCK_K=512
+
+The main optimization opportunity is to:
+1. Use split-K parallelism to distribute the K dimension across multiple blocks, improving memory parallelism
+2. Better utilize L2 cache by having multiple blocks access the same B tile simultaneously
+3. Reduce per-block work to hide memory latency through increased parallelism
+
+Let me implement a split-K approach where multiple blocks collaborate on each output row:
+
+```python
+import triton
+import triton.language as tl
+import torch
+
+
+@triton.jit
+def _matvec_splitk_kernel(
+    a_ptr, b_ptr, c_ptr,
+    M, K,
+    stride_am, stride_ak,
+    stride_bk,
+    stride_cm,
+    BLOCK_M: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    SPLIT_K: tl.constexpr,
+):
+    # 2D grid: (M // BLOCK_M, SPLIT_K)
+    pid_m = tl.program_id(0)
+    pid_k = tl.program_id(1)
+    
+    # Compute K range for this split
+    k_per_split = tl.cdiv(K, SPLIT_K)
+    k_start = pid_k * k_per_split
+    k_end = tl.minimum(k_start + k_per_split, K)
+    
+    # Row indices
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    m_mask = offs_m < M
+    
+    # Initialize accumulators
+    acc = tl.zeros((BLOCK_M,), dtype=tl.float32)
+    
+    # Iterate over K dimension for this split
+    for k0 in range(k_start, k_end, BLOCK_K):
+        offs_k = k0 + tl.arange(0, BLOCK_K)
+        k_mask = offs_k < k_end
+        
+        # Load B vector tile [BLOCK_K]
+        b_ptrs = b_ptr + offs_k * stride_bk
+        b = tl.load(b_ptrs, mask=k_mask, other=0.0).to(tl.float32)
+        
+        # Load A tiles and compute dot products
+        for i in tl.static_range(BLOCK_M):
+            row_idx = pid_m * BLOCK_M + i
+            if row_idx < M:
+                a_ptrs = a_ptr + row_idx * stride_am + offs_k * stride_ak
+                a_row = tl.load(a_ptrs, mask=k_mask, other=0.0).to(tl.float32)
+                dot = tl.sum(a_row * b)
+                acc = tl.where(tl.arange(0, BLOCK_M) == i, acc + dot, acc)
+    
+    # Atomic add to output (for split-K reduction)
+    c_ptrs = c_ptr + offs_m * stride_cm
+    if SPLIT_K > 1:
+        tl.atomic_add(c_ptrs, acc, mask=m_mask)
+    else:
+        tl.store(c_ptrs, acc.to(tl.bfloat16), mask=m_mask)
+
+
+@triton.jit
+def _matvec_simple_kernel(
+    a_ptr, b_ptr, c_ptr,
+    M, K,
+    stride_am, stride_ak,
+    stride_bk,
+    stride_cm,
+    BLOCK_K: tl.constexpr,
+):
+    # Each program computes one output row
+    pid_m = tl.program_id(0)
+    
+    if pid_m >= M:
+        return
+
+    # Initialize FP32 accumulator
+    acc = tl.zeros((1,), dtype=tl.float32)
+
+    # Iterate over K dimension
+    for k0 in range(0, K, BLOCK_K):
+        offs_k = k0 + tl.arange(0, BLOCK_K)
+        k_mask = offs_k < K
+
+        # Load A row tile
+        a_ptrs = a_ptr + pid_m * stride_am + offs_k * stride_ak
+        a_row = tl.load(a_ptrs, mask=k_mask, other=0.0).to(tl.float32)
+
+        # Load B vector tile
+        b_ptrs = b_ptr + offs_k * stride_bk
+        b = tl.load(b_ptrs, mask=k_mask, other=0.0).to(tl.float32)
+
+        # Accumulate
+        acc += tl.sum(a_row * b)
+
+    # Store result
+    tl.store(c_ptr + pid_m * stride_cm, acc.to(tl.bfloat16))
+
+
+def kernel_function(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+    if not A.is_cuda or not B.is_cuda:
+        raise ValueError("A and B must be CUDA tensors.")
+    if A.dtype != torch.bfloat16 or B.dtype != torch.bfloat16:
+        raise ValueError("A and B must be torch.bfloat16 tensors.")
+
+    if A.ndim != 2:
+        raise ValueError("A must be 2D [M, K].")
+    M, K = A.shape
+
+    if B.ndim == 1:
+        if B.shape[0] != K:
+            raise ValueError(f"B shape mismatch")
+        Bv = B.view(K, 1)
+    elif B.ndim == 2:
+        if B.shape[0] != K or B.shape[1] != 1:
+            raise ValueError(f"B must be [K, 1]")
+        Bv = B
+    else:
+        raise ValueError("B must be 1D or 2D")
+
+    C = torch.empty((M, 1), device=A.device, dtype=A.dtype)
+
+    stride_am, stride_ak = A.stride()
+    stride_bk, stride_bn = Bv.stride()
+    stride_cm, stride_cn = C.stride()
+
+    # Use simple kernel with optimized parameters
+    # Large BLOCK_K for memory coalescing, many warps for latency hiding
+    BLOCK_K = 2048
+    
+    grid = (M,)
+    
+    _matvec_simple_kernel[grid](
+        A, Bv, C,
+        M, K,
+        stride_am, stride_ak,
+        stride_bk,
+        stride_cm,
+        BLOCK_K=BLOCK_K,
+        num_warps=8,
+        num_stages=2,
+    )
+
+    return C
+```

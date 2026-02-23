@@ -1,0 +1,27 @@
+[
+    {
+        "category": "underutilized",
+        "summary": "Kernel severely underutilizes both compute and memory resources due to low occupancy and memory access inefficiencies",
+        "reasoning": "Despite roofline indicating memory-bound behavior (75.9% memory SOL), the actual DRAM throughput is only 1.15% of peak, and compute throughput is 14.47%. The warp active percentage is only 12.5%, indicating severe underutilization. The 29.43% long scoreboard stalls suggest warps are waiting on memory operations, while 166 registers per thread severely limits occupancy (launch__occupancy_limit_registers=1).",
+        "root_causes": [
+            {
+                "cause": "Excessive register usage (166 per thread) severely limits occupancy to only 1 block per SM",
+                "evidence": [
+                    {"metric": "launch__registers_per_thread", "value": 166, "interpretation": "Far exceeds optimal register count, limiting concurrent warps"},
+                    {"metric": "launch__occupancy_limit_registers", "value": 1, "interpretation": "Register pressure is the primary occupancy limiter"},
+                    {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active", "value": 12.5, "interpretation": "Only 12.5% of maximum warps are active, indicating severe occupancy issues"}
+                ]
+            },
+            {
+                "cause": "Poor global memory load efficiency with non-coalesced access patterns",
+                "evidence": [
+                    {"metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct", "value": 7.4, "interpretation": "Only 7.4% of loaded bytes are useful, indicating 92.6% wasted bandwidth"},
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 29.43, "interpretation": "29.43% of stalls are waiting on memory operations, confirming memory latency issues"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Reduce register usage by splitting the kernel into smaller tiles, using fewer accumulators, or enabling register spilling with maxrregcount compiler flag to improve occupancy", "rationale": "Increasing occupancy from 1 block to multiple blocks per SM will help hide memory latency and improve overall throughput by allowing more concurrent warps to execute while others wait on memory"}
+        ]
+    }
+]

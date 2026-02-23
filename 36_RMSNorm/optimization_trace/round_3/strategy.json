@@ -1,0 +1,45 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory bandwidth bound at 86.4% of peak DRAM throughput with significant long scoreboard stalls from memory latency",
+    "reasoning": "The roofline analysis shows Memory SOL at 86.4% while Compute SOL is only 21.1%, clearly indicating a memory-bound workload. DRAM throughput is at 86.42% of peak (2.11 TB/s out of 3.9 TB/s). The kernel suffers from 56.3% long scoreboard stalls, indicating warps are frequently waiting for global memory operations to complete. Low L1 cache hit rate (14.17%) and warp occupancy at only 30% further compound the memory bottleneck.",
+    "root_causes": [
+      {
+        "cause": "High memory latency causing long scoreboard stalls - warps waiting for global memory loads to complete",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 56.3,
+            "interpretation": "Over half of stall cycles are due to waiting for memory operations, indicating memory latency is the dominant bottleneck"
+          },
+          {
+            "metric": "l1tex__t_sector_hit_rate.pct",
+            "value": 14.17,
+            "interpretation": "Very low L1 cache hit rate means most accesses go to slower L2 or DRAM"
+          }
+        ]
+      },
+      {
+        "cause": "Low occupancy limiting latency hiding capability due to high register usage",
+        "evidence": [
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 30.03,
+            "interpretation": "Only 30% warp occupancy means insufficient warps to hide memory latency"
+          },
+          {
+            "metric": "launch__registers_per_thread",
+            "value": 96,
+            "interpretation": "High register usage (96 per thread) limits occupancy to only 5 blocks per SM based on register pressure"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Reduce register pressure by processing fewer channels per thread block (smaller C_CONST) or using shared memory to stage data, allowing more concurrent warps to hide memory latency. Consider tiling the W dimension more aggressively with BLOCK_W=64 to increase occupancy.",
+        "rationale": "With 96 registers per thread, occupancy is severely limited. Reducing to ~64 registers would double occupancy, providing more warps to hide the 56% long scoreboard stalls from memory latency."
+      }
+    ]
+  }
+]

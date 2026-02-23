@@ -1,0 +1,45 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory-bound with 99.5% memory SOL, limited by inefficient global memory access patterns causing long scoreboard stalls",
+    "reasoning": "The roofline analysis shows 99.5% memory SOL vs 73.7% compute SOL, confirming memory-bound behavior. DRAM throughput is at 66% of peak (1.6 TB/s), but the kernel suffers from 62.86% long scoreboard stalls indicating memory latency issues. The extremely low memory efficiency of 23.64% bytes per sector for global loads reveals severe memory access pattern inefficiencies.",
+    "root_causes": [
+      {
+        "cause": "Poor memory coalescing and strided access patterns in the 3D pooling window traversal",
+        "evidence": [
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 23.64,
+            "interpretation": "Only 23.64% of loaded bytes are actually used, indicating ~76% wasted bandwidth from non-coalesced or strided accesses"
+          },
+          {
+            "metric": "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+            "value": 66.02,
+            "interpretation": "DRAM throughput is 66% of peak despite being memory-bound, suggesting inefficient access patterns"
+          }
+        ]
+      },
+      {
+        "cause": "High memory latency causing warp stalls waiting for data",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 62.86,
+            "interpretation": "62.86% of stalls are due to waiting for memory operations, indicating memory latency is the primary bottleneck"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 56.92,
+            "interpretation": "Only 57% warp occupancy suggests warps are frequently stalled waiting for memory"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Restructure the kernel to process spatially contiguous output elements together and use shared memory to stage input tiles, enabling coalesced global memory reads and data reuse across the pooling window",
+        "rationale": "The current per-element processing with strided accesses across the 3D pooling window causes poor coalescing (23.64% efficiency). Tiling the input into shared memory would allow coalesced reads and reduce redundant global memory accesses for overlapping pooling windows, improving both bandwidth efficiency and reducing long scoreboard stalls"
+      }
+    ]
+  }
+]

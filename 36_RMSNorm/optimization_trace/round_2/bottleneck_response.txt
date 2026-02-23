@@ -1,0 +1,26 @@
+[
+    {
+        "category": "memory",
+        "summary": "Kernel is memory-bound at 86.3% DRAM throughput with severe long scoreboard stalls from memory latency",
+        "reasoning": "The kernel achieves 86.33% of peak DRAM bandwidth (2.11 TB/s out of 3.9 TB/s) while compute throughput is only 21.1%. The dominant stall reason is long scoreboard (55.86%), indicating warps are waiting on global memory loads. Low warp occupancy (30.03%) exacerbates the inability to hide memory latency. The L1 cache hit rate is very poor at 14.14%, meaning most accesses go to DRAM.",
+        "root_causes": [
+            {
+                "cause": "Poor L1 cache utilization with low hit rate causing excessive DRAM traffic",
+                "evidence": [
+                    {"metric": "l1tex__t_sector_hit_rate.pct", "value": 14.14, "interpretation": "Only 14% of L1 accesses hit cache, forcing 86% of requests to go to slower memory levels"},
+                    {"metric": "dram__throughput.avg.pct_of_peak_sustained_elapsed", "value": 86.33, "interpretation": "DRAM is heavily utilized due to cache misses"}
+                ]
+            },
+            {
+                "cause": "Low occupancy prevents effective latency hiding for memory operations",
+                "evidence": [
+                    {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active", "value": 30.03, "interpretation": "Only 30% warp occupancy means insufficient warps to hide memory latency"},
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 55.86, "interpretation": "56% of stalls are waiting on global memory loads, directly tied to low occupancy"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Reduce register usage from 96 to under 64 registers per thread by using shared memory for intermediate channel values, enabling higher occupancy (currently limited to 5 blocks by registers)", "rationale": "With 96 registers per thread, occupancy is severely limited to ~5 blocks per SM. Reducing to 64 registers would allow 8+ blocks, increasing warp count to better hide the 55.86% long scoreboard stalls from memory latency"}
+        ]
+    }
+]

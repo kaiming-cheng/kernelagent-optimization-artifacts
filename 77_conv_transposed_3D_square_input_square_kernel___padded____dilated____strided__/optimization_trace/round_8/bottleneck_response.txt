@@ -1,0 +1,26 @@
+[
+    {
+        "category": "memory",
+        "summary": "Severe memory latency bottleneck due to inefficient global memory access patterns causing long scoreboard stalls",
+        "reasoning": "The kernel shows 92.85% compute_memory_throughput but only 1.45% DRAM throughput, indicating memory operations are bottlenecked at L1 cache level. The 55.47% long scoreboard stalls confirm warps are waiting for memory operations. Despite 98.37% L1 hit rate, the 7.4% global load efficiency and 93.85% L1 throughput suggest poor memory coalescing is causing excessive cache line fetches.",
+        "root_causes": [
+            {
+                "cause": "Extremely poor global memory load efficiency causing excessive memory transactions",
+                "evidence": [
+                    {"metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct", "value": 7.4, "interpretation": "Only 7.4% of loaded bytes are actually used, meaning ~13x more data is fetched than needed due to uncoalesced access patterns"},
+                    {"metric": "l1tex__throughput.avg.pct_of_peak_sustained_active", "value": 93.85, "interpretation": "L1 cache is nearly saturated processing redundant memory requests from poor coalescing"}
+                ]
+            },
+            {
+                "cause": "High memory latency stalls due to long dependency chains in scattered memory accesses",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 55.47, "interpretation": "Over half of warp cycles are stalled waiting for memory operations to complete"},
+                    {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active", "value": 12.48, "interpretation": "Very low warp occupancy (12.48%) limits ability to hide memory latency through parallelism"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Restructure memory access to load contiguous tiles into shared memory before computation. Preload x_tile and w_tile for multiple kernel positions using cooperative loading across threads, then perform computation from shared memory to improve coalescing from 7.4% to near 100%.", "rationale": "Current scattered access pattern (id_val, ih_val, iw_val computed per-thread) causes uncoalesced loads. Using shared memory staging with coalesced global loads will dramatically reduce L1 pressure and memory transactions, directly addressing both the poor load efficiency and long scoreboard stalls."}
+        ]
+    }
+]

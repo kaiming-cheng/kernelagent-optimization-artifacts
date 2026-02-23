@@ -1,0 +1,26 @@
+```json
+{
+    "was_diagnosis_correct": true,
+    "was_fix_effective": false,
+    "expected_outcome": "Reducing register pressure should have increased occupancy, allowing more blocks per SM, which would improve utilization and reduce latency",
+    "actual_outcome": "Performance degraded by 37%, going from 6.2ms to 8.5ms. Memory SOL at 34.5% suggests we're now more memory-bound but still underutilized overall with only 5.7% compute SOL",
+    "reasoning": "The diagnosis of register pressure limiting occupancy was likely correct, but the fix was counterproductive. Reducing BLOCK_SIZE_M means each block processes fewer rows, requiring more total blocks and more memory accesses. The smaller tile size likely reduced arithmetic intensity and data reuse, shifting the bottleneck to memory bandwidth without actually improving compute efficiency. The 34.5% memory SOL with only 5.7% compute SOL indicates we're now doing less useful compute work per memory access.",
+    "lessons": [
+        "Smaller block sizes don't always improve performance - they can reduce data reuse and arithmetic intensity",
+        "Register pressure should be addressed by optimizing register usage within the existing tile size, not by reducing tile size",
+        "When memory SOL is higher than compute SOL after a change, the optimization likely hurt arithmetic intensity",
+        "Occupancy is not the only factor - maintaining good data reuse is equally important"
+    ],
+    "avoid_patterns": [
+        "Reducing BLOCK_SIZE_M to address register pressure - this hurts data reuse",
+        "Blindly reducing tile sizes to improve occupancy without considering arithmetic intensity impact",
+        "Applying config changes labeled as 'none' when the fix description suggests specific parameter changes"
+    ],
+    "try_patterns": [
+        "Keep larger tile sizes but reduce register usage through loop restructuring or explicit register limiting",
+        "Use shared memory more aggressively to maintain data reuse while reducing register pressure",
+        "Try num_stages=1 or 2 to reduce register usage from software pipelining while keeping tile sizes",
+        "Consider using fp16 accumulation temporarily or mixed precision to reduce register footprint"
+    ]
+}
+```

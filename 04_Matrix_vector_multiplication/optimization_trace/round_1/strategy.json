@@ -1,0 +1,55 @@
+[
+  {
+    "category": "underutilized",
+    "summary": "Kernel severely underutilizes GPU resources due to low occupancy from excessive register usage and memory access latency stalls",
+    "reasoning": "Compute SOL is only 4.9% and Memory SOL is 18.5%, both well below the 60% threshold indicating neither compute nor memory is saturated. The kernel achieves only 6.25% warp occupancy (sm__warps_active.avg.pct_of_peak_sustained_active) and uses 254 registers per thread, limiting occupancy to just 2 blocks per SM. Long scoreboard stalls at 19.42% indicate warps are frequently waiting for memory operations to complete, while the L1 hit rate of 0% and L2 hit rate of 0.61% show poor cache utilization for this streaming workload.",
+    "root_causes": [
+      {
+        "cause": "Excessive register usage (254 per thread) severely limits occupancy to only 2 blocks per SM",
+        "evidence": [
+          {
+            "metric": "launch__registers_per_thread",
+            "value": 254,
+            "interpretation": "Near the 256 register limit, drastically limiting concurrent warps/blocks"
+          },
+          {
+            "metric": "launch__occupancy_limit_registers",
+            "value": 2,
+            "interpretation": "Registers are the primary occupancy limiter, allowing only 2 blocks per SM"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 6.25,
+            "interpretation": "Only 6.25% of peak warp occupancy achieved, leaving most SM resources idle"
+          }
+        ]
+      },
+      {
+        "cause": "Memory latency stalls due to insufficient warps to hide DRAM access latency",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 19.42,
+            "interpretation": "Warps frequently stalled waiting for global memory loads to complete"
+          },
+          {
+            "metric": "l1tex__t_sector_hit_rate.pct",
+            "value": 0.0,
+            "interpretation": "Zero L1 cache hits indicate streaming access pattern with no data reuse in L1"
+          },
+          {
+            "metric": "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+            "value": 18.48,
+            "interpretation": "Only achieving 18.5% of peak memory bandwidth despite being memory-bound workload"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Reduce BLOCK_M from 128 to 32-64 and increase BLOCK_K to 512-1024, using shared memory to stage B vector tiles for reuse across rows, reducing register pressure while improving memory access efficiency",
+        "rationale": "Smaller BLOCK_M reduces the accumulator registers needed per thread. Loading B tiles into shared memory allows reuse across multiple rows within a block, improving effective bandwidth. This should reduce register count below 128, enabling 4-8x more concurrent blocks per SM to hide memory latency through increased occupancy"
+      }
+    ]
+  }
+]

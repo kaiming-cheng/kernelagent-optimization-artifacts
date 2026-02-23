@@ -1,0 +1,20 @@
+[
+    {
+        "category": "memory",
+        "summary": "Kernel is memory-bound with 99.7% memory SOL, limited by poor memory access patterns and long scoreboard stalls",
+        "reasoning": "The roofline analysis shows 99.7% memory SOL vs 73.8% compute SOL, confirming memory bandwidth is the limiting factor. The kernel achieves 65.8% DRAM throughput but suffers from severe memory access inefficiency with only 23.64% bytes per sector utilization for global loads, and 62.86% of warp stalls are due to long scoreboard (memory dependency) waits.",
+        "root_causes": [
+            {
+                "cause": "Poor memory coalescing with only 23.64% sector utilization for global memory loads",
+                "evidence": [{"metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct", "value": 23.64, "interpretation": "Only ~24% of each 32-byte sector is used per load, meaning ~76% of fetched data is wasted due to non-coalesced access patterns in the pooling window iteration"}]
+            },
+            {
+                "cause": "Memory latency stalls dominating execution time with warps waiting on global memory",
+                "evidence": [{"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 62.86, "interpretation": "62.86% of active warp cycles are stalled waiting for memory operations to complete, indicating memory latency is hiding insufficient work between loads"}]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Restructure the kernel to process contiguous output elements along the innermost (W) dimension within each thread block, using shared memory to cache input tiles that are reused across the pooling window iterations", "rationale": "This would improve memory coalescing by having adjacent threads access adjacent memory locations, and reduce redundant global memory loads by exploiting the overlapping input regions between adjacent pooling windows, addressing both the poor sector utilization and long scoreboard stalls"}
+        ]
+    }
+]

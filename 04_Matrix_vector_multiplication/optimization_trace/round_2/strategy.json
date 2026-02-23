@@ -1,0 +1,50 @@
+[
+  {
+    "category": "underutilized",
+    "summary": "Kernel is severely underutilized with 60% of stalls from long scoreboard waits indicating memory latency issues",
+    "reasoning": "Both compute (16.8%) and memory (25.6%) SOL are well below 60%, classifying this as underutilized. The dominant stall reason is long scoreboard (60.24%), indicating warps are waiting for memory operations to complete. Low warp occupancy (24.26%) further limits the GPU's ability to hide latency through warp scheduling.",
+    "root_causes": [
+      {
+        "cause": "High memory latency stalls due to poor cache utilization and insufficient memory-level parallelism",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 60.24,
+            "interpretation": "60% of stalls are from waiting on global memory loads, indicating memory latency is not being hidden"
+          },
+          {
+            "metric": "l1tex__t_sector_hit_rate.pct",
+            "value": 14.84,
+            "interpretation": "Very low L1 cache hit rate means most accesses go to slower memory levels"
+          },
+          {
+            "metric": "lts__t_sector_hit_rate.pct",
+            "value": 1.62,
+            "interpretation": "Near-zero L2 hit rate indicates no data reuse across accesses"
+          }
+        ]
+      },
+      {
+        "cause": "Low occupancy limits latency hiding capability",
+        "evidence": [
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 24.26,
+            "interpretation": "Only 24% warp occupancy means insufficient warps to hide memory latency"
+          },
+          {
+            "metric": "launch__occupancy_limit_registers",
+            "value": 16,
+            "interpretation": "Register usage limits occupancy to 16 warps per SM, reducing parallelism"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Increase BLOCK_K and use shared memory to cache the B vector across K iterations, enabling data reuse and reducing global memory pressure. Also consider vectorized loads (e.g., tl.load with 4-element vectors) to improve memory coalescing and increase in-flight memory requests.",
+        "rationale": "Caching B in shared memory eliminates redundant loads since all rows use the same B values. Larger BLOCK_K with proper prefetching increases memory-level parallelism to better hide latency, while vectorized loads improve bandwidth utilization."
+      }
+    ]
+  }
+]

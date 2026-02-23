@@ -1,0 +1,118 @@
+Looking at the analysis, the most successful attempt achieved 35% improvement by reducing BLOCK_SIZE_M to 32 and BLOCK_SIZE_K to 128. The current bottleneck is now memory-bound (41.4% memory SOL vs 9.2% compute SOL).
+
+Based on the lessons learned:
+1. The successful fix reduced register pressure by using smaller block sizes
+2. We should focus on memory optimization since we're memory-bound
+3. Avoid drastic changes - make incremental improvements
+
+My optimization strategy:
+1. Keep the reduced block sizes that worked (BLOCK_SIZE_M=32, BLOCK_SIZE_K=128)
+2. Increase BLOCK_SIZE_K slightly to improve memory coalescing and arithmetic intensity
+3. Use num_warps=8 to increase parallelism for memory latency hiding
+4. Use num_stages=4 for better pipelining to hide memory latency
+5. Ensure vectorized memory loads for better memory bandwidth utilization
+
+```python
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def matvec_kernel(
+    A_ptr,
+    x_ptr,
+    C_ptr,
+    M,
+    K,
+    stride_am,
+    stride_ak,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+):
+    """
+    Matrix-vector multiplication: C = A @ x
+    A is [M, K], x is [K], C is [M]
+    """
+    pid_m = tl.program_id(0)
+    
+    # Each program handles BLOCK_SIZE_M rows
+    row_start = pid_m * BLOCK_SIZE_M
+    row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+    row_mask = row_offsets < M
+    
+    # Initialize accumulator in float32 for numerical stability
+    acc = tl.zeros((BLOCK_SIZE_M,), dtype=tl.float32)
+    
+    # Iterate over K dimension in blocks
+    for k_start in range(0, K, BLOCK_SIZE_K):
+        k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+        k_mask = k_offsets < K
+        
+        # Load x vector elements [BLOCK_SIZE_K]
+        x_vals = tl.load(x_ptr + k_offsets, mask=k_mask, other=0.0)
+        
+        # Load A matrix block [BLOCK_SIZE_M, BLOCK_SIZE_K]
+        a_ptrs = A_ptr + row_offsets[:, None] * stride_am + k_offsets[None, :] * stride_ak
+        combined_mask = row_mask[:, None] & k_mask[None, :]
+        a_vals = tl.load(a_ptrs, mask=combined_mask, other=0.0)
+        
+        # Convert to float32 for accumulation
+        a_vals_f32 = a_vals.to(tl.float32)
+        x_vals_f32 = x_vals.to(tl.float32)
+        
+        # Compute element-wise product and sum over K dimension
+        product = a_vals_f32 * x_vals_f32[None, :]
+        acc += tl.sum(product, axis=1)
+    
+    # Store result - convert back to output dtype
+    c_ptrs = C_ptr + row_offsets
+    acc_out = acc.to(tl.bfloat16)
+    tl.store(c_ptrs, acc_out, mask=row_mask)
+
+
+def kernel_function(A: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """
+    Matrix-vector multiplication: C = A @ x
+    
+    Args:
+        A: Matrix of shape [M, K]
+        x: Vector of shape [K] or [K, 1]
+    
+    Returns:
+        C: Vector of shape [M] or [M, 1]
+    """
+    # Handle x being [K, 1] shape
+    x_squeezed = x.squeeze() if x.dim() > 1 else x
+    
+    M, K = A.shape
+    assert x_squeezed.shape[0] == K, f"Shape mismatch: A is [{M}, {K}], x is [{x_squeezed.shape[0]}]"
+    
+    # Allocate output with same dtype as input
+    C = torch.empty(M, device=A.device, dtype=A.dtype)
+    
+    # Optimized block sizes based on profiling:
+    # - BLOCK_SIZE_M=32 reduces register pressure (proven effective)
+    # - BLOCK_SIZE_K=256 for better memory coalescing and arithmetic intensity
+    # - num_warps=8 for better memory latency hiding
+    # - num_stages=4 for software pipelining
+    BLOCK_SIZE_M = 32
+    BLOCK_SIZE_K = 256
+    
+    grid = (triton.cdiv(M, BLOCK_SIZE_M),)
+    
+    matvec_kernel[grid](
+        A, x_squeezed, C,
+        M, K,
+        A.stride(0), A.stride(1),
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+        num_warps=8,
+        num_stages=4,
+    )
+    
+    # Return with same shape as input x
+    if x.dim() > 1 and x.shape[-1] == 1:
+        return C.unsqueeze(-1)
+    return C
+```

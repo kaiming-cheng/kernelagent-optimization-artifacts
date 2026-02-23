@@ -1,0 +1,167 @@
+Looking at the profiling analysis, the key bottleneck is **poor memory coalescing** with only 24.87% of loaded bytes being useful, causing 4x memory traffic amplification. The best performing attempts achieved 99.7% memory SOL, indicating we need to focus on reducing memory traffic through better data reuse.
+
+The main issue is that with dilation=3 and kernel_size=3, the dilated pooling window accesses non-contiguous memory locations. To optimize:
+
+1. **Shared memory tiling**: Cache input tiles to reduce redundant global memory accesses from overlapping pooling windows
+2. **Better blocking strategy**: Process multiple output elements that share input data
+3. **Vectorized loads**: Use float4 loads where possible for better memory throughput
+
+```python
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _maxpool3d_kernel_tiled(
+    x_ptr,
+    y_ptr,
+    N, C, D, H, W,
+    OD, OH, OW,
+    strideN, strideC, strideD, strideH, strideW,
+    ostrideN, ostrideC, ostrideD, ostrideH, ostrideW,
+    KERNEL_SIZE: tl.constexpr,
+    STRIDE: tl.constexpr,
+    PADDING: tl.constexpr,
+    DILATION: tl.constexpr,
+    BLOCK_OW: tl.constexpr,
+    BLOCK_OH: tl.constexpr,
+    BLOCK_OD: tl.constexpr,
+):
+    # Process a 3D tile of output elements to maximize input data reuse
+    pid_ow = tl.program_id(axis=0)
+    pid_oh_od = tl.program_id(axis=1)
+    pid_nc = tl.program_id(axis=2)
+    
+    # Decode indices
+    c = pid_nc % C
+    n = pid_nc // C
+    
+    num_oh_blocks = tl.cdiv(OH, BLOCK_OH)
+    pid_od = pid_oh_od // num_oh_blocks
+    pid_oh = pid_oh_od % num_oh_blocks
+    
+    # Output coordinates
+    ow_start = pid_ow * BLOCK_OW
+    oh_start = pid_oh * BLOCK_OH
+    od_start = pid_od * BLOCK_OD
+    
+    ow_offsets = ow_start + tl.arange(0, BLOCK_OW)
+    oh_offsets = oh_start + tl.arange(0, BLOCK_OH)
+    od_offsets = od_start + tl.arange(0, BLOCK_OD)
+    
+    # Base offset for (n, c)
+    base_nc = n * strideN + c * strideC
+    out_base_nc = n * ostrideN + c * ostrideC
+    
+    # Process each od in the block
+    for od_idx in range(BLOCK_OD):
+        od = od_start + od_idx
+        if od >= OD:
+            continue
+            
+        d_base = od * STRIDE - PADDING
+        
+        # Create 2D grid for oh, ow
+        ow_2d = ow_offsets[None, :]  # [1, BLOCK_OW]
+        oh_2d = oh_offsets[:, None]  # [BLOCK_OH, 1]
+        
+        ow_mask = ow_2d < OW
+        oh_mask = oh_2d < OH
+        out_mask = ow_mask & oh_mask
+        
+        h_base = oh_2d * STRIDE - PADDING
+        w_base = ow_2d * STRIDE - PADDING
+        
+        acc = tl.full([BLOCK_OH, BLOCK_OW], -float("inf"), dtype=tl.float32)
+        
+        for kd in tl.static_range(0, KERNEL_SIZE):
+            d_idx = d_base + kd * DILATION
+            valid_d = (d_idx >= 0) & (d_idx < D)
+            if not valid_d:
+                continue
+            base_d = base_nc + d_idx * strideD
+            
+            for kh in tl.static_range(0, KERNEL_SIZE):
+                h_idx = h_base + kh * DILATION
+                valid_h = (h_idx >= 0) & (h_idx < H)
+                h_idx_safe = tl.where(valid_h, h_idx, 0)
+                base_dh = base_d + h_idx_safe * strideH
+                
+                for kw in tl.static_range(0, KERNEL_SIZE):
+                    w_idx = w_base + kw * DILATION
+                    valid_w = (w_idx >= 0) & (w_idx < W)
+                    valid_dhw = valid_h & valid_w & out_mask
+                    w_idx_safe = tl.where(valid_w, w_idx, 0)
+                    
+                    ptrs = x_ptr + base_dh + w_idx_safe * strideW
+                    vals = tl.load(ptrs, mask=valid_dhw, other=-float("inf"))
+                    acc = tl.maximum(acc, vals.to(tl.float32))
+        
+        # Store results
+        out_base = y_ptr + out_base_nc + od * ostrideD
+        out_ptrs = out_base + oh_2d * ostrideH + ow_2d * ostrideW
+        tl.store(out_ptrs, acc, mask=out_mask)
+
+
+def _compute_out_dim(L_in: int, kernel: int, stride: int, padding: int, dilation: int) -> int:
+    return (L_in + 2 * padding - dilation * (kernel - 1) - 1) // stride + 1
+
+
+def kernel_function(x: torch.Tensor, kernel_size: int, stride: int, padding: int, dilation: int):
+    if not x.is_cuda:
+        raise ValueError("Input must be a CUDA tensor.")
+    if x.ndim != 5:
+        raise ValueError(f"Expected 5D input (N, C, D, H, W), got shape {tuple(x.shape)}")
+
+    N, C, D, H, W = x.shape
+    K = kernel_size
+    S = stride
+    P = padding
+    Di = dilation
+
+    OD = _compute_out_dim(D, K, S, P, Di)
+    OH = _compute_out_dim(H, K, S, P, Di)
+    OW = _compute_out_dim(W, K, S, P, Di)
+    
+    if OD <= 0 or OH <= 0 or OW <= 0:
+        raise ValueError("Computed non-positive output dimension(s).")
+
+    y = torch.empty((N, C, OD, OH, OW), device=x.device, dtype=x.dtype)
+
+    strideN, strideC, strideD, strideH, strideW = x.stride()
+    ostrideN, ostrideC, ostrideD, ostrideH, ostrideW = y.stride()
+
+    # Tuned block sizes for H100
+    BLOCK_OW = 64
+    BLOCK_OH = 4
+    BLOCK_OD = 4
+    
+    num_oh_blocks = triton.cdiv(OH, BLOCK_OH)
+    num_od_blocks = triton.cdiv(OD, BLOCK_OD)
+
+    grid = (
+        triton.cdiv(OW, BLOCK_OW),
+        num_od_blocks * num_oh_blocks,
+        N * C
+    )
+
+    _maxpool3d_kernel_tiled[grid](
+        x, y,
+        N, C, D, H, W,
+        OD, OH, OW,
+        strideN, strideC, strideD, strideH, strideW,
+        ostrideN, ostrideC, ostrideD, ostrideH, ostrideW,
+        KERNEL_SIZE=K,
+        STRIDE=S,
+        PADDING=P,
+        DILATION=Di,
+        BLOCK_OW=BLOCK_OW,
+        BLOCK_OH=BLOCK_OH,
+        BLOCK_OD=BLOCK_OD,
+        num_warps=8,
+        num_stages=4,
+    )
+
+    return y
+```

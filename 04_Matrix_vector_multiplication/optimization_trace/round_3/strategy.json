@@ -1,0 +1,55 @@
+[
+  {
+    "category": "underutilized",
+    "summary": "Severe register pressure limits occupancy to 2 warps per SM, causing long scoreboard stalls",
+    "reasoning": "The kernel uses 255 registers per thread (maximum allowed), limiting occupancy to just 2 blocks per SM based on registers. With only 6.25% warp occupancy and 31.71% long scoreboard stalls, the GPU cannot hide memory latency. Despite 39.44% DRAM throughput, compute is only at 9.42% because there aren't enough active warps to keep execution units busy while waiting for memory.",
+    "root_causes": [
+      {
+        "cause": "Extreme register pressure using maximum 255 registers per thread severely limits occupancy",
+        "evidence": [
+          {
+            "metric": "launch__registers_per_thread",
+            "value": 255,
+            "interpretation": "Maximum register usage limits blocks per SM to 2, preventing latency hiding"
+          },
+          {
+            "metric": "launch__occupancy_limit_registers",
+            "value": 2,
+            "interpretation": "Registers are the primary occupancy limiter, allowing only 2 blocks per SM"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 6.25,
+            "interpretation": "Only 6.25% of possible warps are active, extremely low occupancy"
+          }
+        ]
+      },
+      {
+        "cause": "Long scoreboard stalls from memory operations cannot be hidden due to insufficient parallelism",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 31.71,
+            "interpretation": "31.7% of stalls are waiting for global memory loads to complete"
+          },
+          {
+            "metric": "l1tex__t_sector_hit_rate.pct",
+            "value": 7.8,
+            "interpretation": "Very low L1 cache hit rate means most accesses go to DRAM"
+          },
+          {
+            "metric": "lts__t_sector_hit_rate.pct",
+            "value": 1.05,
+            "interpretation": "Near-zero L2 hit rate indicates poor data reuse across blocks"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Reduce BLOCK_SIZE_M from 64 to 16-32 and BLOCK_SIZE_K from 256 to 64-128, and add num_warps=4 constraint to reduce register pressure and increase occupancy",
+        "rationale": "Smaller block sizes reduce the accumulator and intermediate storage requirements, lowering register usage. This allows more blocks to run concurrently per SM, enabling better latency hiding for memory operations and reducing long scoreboard stalls"
+      }
+    ]
+  }
+]

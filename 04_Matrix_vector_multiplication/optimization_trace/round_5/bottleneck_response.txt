@@ -1,0 +1,28 @@
+[
+    {
+        "category": "underutilized",
+        "summary": "Severe register pressure and low occupancy causing long memory latency stalls",
+        "reasoning": "The kernel achieves only 39.5% memory SOL and 9.4% compute SOL, with neither resource saturated. The critical issue is extremely low occupancy (6.25% warps active) caused by maximum register usage (255 registers per thread), which limits blocks per SM to just 2. This leaves insufficient warps to hide the 31.72% long scoreboard stalls from memory operations.",
+        "root_causes": [
+            {
+                "cause": "Extreme register pressure limiting occupancy to 2 blocks per SM",
+                "evidence": [
+                    {"metric": "launch__registers_per_thread", "value": 255, "interpretation": "Maximum possible registers used, severely limiting concurrent warps"},
+                    {"metric": "launch__occupancy_limit_registers", "value": 2, "interpretation": "Register usage limits occupancy to only 2 blocks per SM"},
+                    {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active", "value": 6.25, "interpretation": "Only 6.25% of peak warp occupancy achieved, insufficient to hide latency"}
+                ]
+            },
+            {
+                "cause": "Long memory latency stalls due to insufficient warp-level parallelism",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 31.72, "interpretation": "31.72% of cycles stalled waiting for global memory operations"},
+                    {"metric": "l1tex__t_sector_hit_rate.pct", "value": 7.8, "interpretation": "Poor L1 cache hit rate means most accesses go to slower memory levels"},
+                    {"metric": "lts__t_sector_hit_rate.pct", "value": 1.05, "interpretation": "Extremely low L2 hit rate forces accesses to HBM"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Reduce register pressure by using smaller BLOCK_SIZE_M (e.g., 16 or 32) and explicitly limiting registers with num_warps=8 and maxnreg constraint, or restructure to process fewer rows per thread block", "rationale": "Reducing from 255 to ~64 registers would allow 8x more concurrent blocks, dramatically improving occupancy from 6.25% to potentially 50%+, providing enough warps to hide the long memory latency stalls"}
+        ]
+    }
+]

@@ -1,0 +1,26 @@
+[
+    {
+        "category": "memory",
+        "summary": "L1 cache bandwidth saturated at 97.8% while DRAM throughput is severely underutilized at 0.4%",
+        "reasoning": "The roofline analysis confirms this kernel is memory-bound with 97.8% memory SOL and only 18.1% compute SOL. The L1 cache throughput is at 97.81% of peak sustained active, indicating the kernel is bottlenecked on L1 bandwidth. The extremely high L1 hit rate (99.12%) combined with very low DRAM throughput (0.4%) and poor global load efficiency (6.83% bytes per sector) suggests the kernel is performing many redundant or poorly coalesced memory accesses that thrash the L1 cache.",
+        "root_causes": [
+            {
+                "cause": "Extremely poor global memory load efficiency causing excessive L1 cache pressure",
+                "evidence": [
+                    {"metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct", "value": 6.83, "interpretation": "Only 6.83% of loaded bytes are actually used, meaning ~93% of memory bandwidth is wasted on unused data within cache lines"},
+                    {"metric": "l1tex__throughput.avg.pct_of_peak_sustained_active", "value": 97.81, "interpretation": "L1 cache is saturated handling these inefficient loads"}
+                ]
+            },
+            {
+                "cause": "Scattered memory access patterns from convolution index calculations causing non-coalesced accesses",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_short_scoreboard_per_warp_active.pct", "value": 16.41, "interpretation": "16.4% of stalls from short scoreboard indicates frequent L1 cache dependency waits"},
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 15.98, "interpretation": "16% long scoreboard stalls indicate memory latency from scattered access patterns"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Restructure the memory access pattern by loading input tiles into shared memory with coalesced accesses, then performing the scattered reads from shared memory. Use tiling to ensure contiguous threads access contiguous memory addresses when loading from global memory.", "rationale": "The current kernel computes scattered indices (idivd, idivh, idivw) per thread which leads to non-coalesced global loads. By first loading a contiguous tile of input data into shared memory cooperatively across the block, then indexing into shared memory for the convolution computation, global memory accesses become coalesced and L1 pressure is reduced."}
+        ]
+    }
+]

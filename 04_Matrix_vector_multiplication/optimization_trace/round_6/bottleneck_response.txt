@@ -1,0 +1,28 @@
+[
+    {
+        "category": "underutilized",
+        "summary": "Kernel suffers from severe occupancy limitations due to excessive register usage, causing long memory latency stalls",
+        "reasoning": "The kernel achieves only 41.4% memory SOL and 9.2% compute SOL, with very low warp occupancy (6.26% of peak). The dominant stall reason is long scoreboard waits (54.57%), indicating warps are blocked waiting for memory operations to complete. With only 3 blocks allowed per SM due to register limits (168 registers per thread), there are insufficient warps to hide memory latency.",
+        "root_causes": [
+            {
+                "cause": "Excessive register usage (168 per thread) severely limits occupancy to only 3 blocks per SM",
+                "evidence": [
+                    {"metric": "launch__registers_per_thread", "value": 168, "interpretation": "Far exceeds typical target of 32-64 registers, limiting concurrent blocks"},
+                    {"metric": "launch__occupancy_limit_registers", "value": 3, "interpretation": "Registers are the primary occupancy limiter, allowing only 3 blocks per SM"},
+                    {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active", "value": 6.26, "interpretation": "Extremely low warp occupancy means few warps available to hide latency"}
+                ]
+            },
+            {
+                "cause": "Memory latency cannot be hidden due to insufficient concurrent warps, causing long scoreboard stalls",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 54.57, "interpretation": "Majority of stall time is waiting for global memory loads to complete"},
+                    {"metric": "l1tex__t_sector_hit_rate.pct", "value": 0, "interpretation": "Zero L1 cache hit rate means all loads go to slower memory hierarchy"},
+                    {"metric": "lts__t_sector_hit_rate.pct", "value": 2.04, "interpretation": "Very low L2 hit rate compounds memory latency issues"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Reduce BLOCK_SIZE_K from 512 to 128-256 and BLOCK_SIZE_M from 32 to 16 to decrease register pressure, enabling higher occupancy and better latency hiding", "rationale": "Smaller tile sizes reduce the number of live values that must be held in registers simultaneously. With 168 registers per thread, the 32x512 tile is too large. Reducing to 16x128 or 16x256 should bring registers below 64, allowing more blocks per SM and more warps to hide the 54.57% long scoreboard stalls"}
+        ]
+    }
+]

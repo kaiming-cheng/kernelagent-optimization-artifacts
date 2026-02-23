@@ -1,0 +1,25 @@
+```json
+{
+    "was_diagnosis_correct": true,
+    "was_fix_effective": true,
+    "expected_outcome": "Reducing register pressure by adjusting BLOCK_M and using shared memory for B vector tiles should increase occupancy, allowing more blocks per SM and better hardware utilization",
+    "actual_outcome": "Performance improved by 28.5% (9.5ms to 6.8ms), confirming that register pressure was indeed limiting performance. However, both Compute (16.9%) and Memory (25.8%) SOL remain low, indicating further optimization opportunities",
+    "reasoning": "The diagnosis was correct - 254 registers per thread with only 2 blocks per SM was severely limiting parallelism. The fix of reducing BLOCK_M and using shared memory successfully traded register usage for shared memory usage, improving occupancy. The 28.5% speedup validates this approach. However, the still-low SOL metrics (Compute 16.9%, Memory 25.8%) suggest the kernel is now bottlenecked elsewhere - likely still underutilized or facing latency issues rather than pure compute or memory bandwidth limits.",
+    "lessons": [
+        "Register pressure from large tile sizes can severely limit occupancy and overall performance",
+        "Trading register usage for shared memory usage is an effective strategy when occupancy is the bottleneck",
+        "A 28.5% improvement from occupancy fixes suggests the kernel had significant latency hiding issues",
+        "Even after fixing register pressure, low SOL metrics indicate more optimization work is needed"
+    ],
+    "avoid_patterns": [
+        "Using very large BLOCK_M values (128+) that cause excessive register spilling",
+        "Assuming a single optimization pass will fully resolve performance issues"
+    ],
+    "try_patterns": [
+        "Continue investigating why both Compute and Memory SOL remain low - possible instruction-level parallelism or memory access pattern issues",
+        "Consider further tile size tuning to balance occupancy vs. arithmetic intensity",
+        "Look into memory coalescing and access patterns since Memory SOL is only 25.8%",
+        "Profile for stalls and latency issues that may be hiding parallelism"
+    ]
+}
+```

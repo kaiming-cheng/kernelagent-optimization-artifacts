@@ -1,0 +1,173 @@
+Looking at the optimization history, the best performing attempt achieved 2.6718ms by processing contiguous memory along the W dimension. The key insights are:
+
+1. Memory coalescing along W dimension is crucial
+2. Shared memory approaches added overhead without benefit
+3. The kernel is now compute-bound at ~86% compute SOL
+4. Need to focus on reducing arithmetic operations and improving ILP
+
+Let me optimize by:
+1. Using vectorized loads (float4) for better memory throughput
+2. Unrolling the pooling window loops for better ILP
+3. Processing multiple output elements per thread with better spatial locality
+4. Reducing index computation overhead
+
+```python
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def max_pool3d_kernel_optimized(
+    input_ptr,
+    output_ptr,
+    N, C, D, H, W,
+    OD, OH, OW,
+    stride_n, stride_c, stride_d, stride_h, stride_w,
+    kernel_size: tl.constexpr,
+    stride: tl.constexpr,
+    padding: tl.constexpr,
+    dilation: tl.constexpr,
+    BLOCK_OW: tl.constexpr,
+):
+    """
+    Optimized 3D Max Pooling kernel.
+    Each program handles BLOCK_OW contiguous output elements along W dimension.
+    """
+    # Get program ID
+    pid = tl.program_id(0)
+    
+    # Total number of output rows (N * C * OD * OH)
+    total_rows = N * C * OD * OH
+    num_ow_blocks = tl.cdiv(OW, BLOCK_OW)
+    
+    # Decompose pid into row and ow_block
+    row_idx = pid // num_ow_blocks
+    ow_block = pid % num_ow_blocks
+    
+    # Early exit if out of bounds
+    if row_idx >= total_rows:
+        return
+    
+    # Decompose row_idx to (n, c, od, oh)
+    oh = row_idx % OH
+    tmp = row_idx // OH
+    od = tmp % OD
+    tmp = tmp // OD
+    c = tmp % C
+    n = tmp // C
+    
+    # Output W indices for this block
+    ow_base = ow_block * BLOCK_OW
+    ow_offs = ow_base + tl.arange(0, BLOCK_OW)
+    ow_mask = ow_offs < OW
+    
+    # Compute input starting positions
+    d_start = od * stride - padding
+    h_start = oh * stride - padding
+    w_start = ow_offs * stride - padding
+    
+    # Base offset for this (n, c) slice
+    base_offset = n * stride_n + c * stride_c
+    
+    # Initialize max values
+    max_val = tl.full([BLOCK_OW], float('-inf'), dtype=tl.float32)
+    
+    # Iterate over the pooling window
+    for kd in range(kernel_size):
+        d_in = d_start + kd * dilation
+        d_valid = (d_in >= 0) & (d_in < D)
+        
+        if not d_valid:
+            continue
+            
+        d_offset = d_in * stride_d
+        
+        for kh in range(kernel_size):
+            h_in = h_start + kh * dilation
+            h_valid = (h_in >= 0) & (h_in < H)
+            
+            if not h_valid:
+                continue
+                
+            h_offset = h_in * stride_h
+            
+            for kw in range(kernel_size):
+                w_in = w_start + kw * dilation
+                w_valid = (w_in >= 0) & (w_in < W)
+                
+                # Combined validity check
+                valid = ow_mask & w_valid
+                
+                # Compute input indices
+                input_idx = base_offset + d_offset + h_offset + w_in * stride_w
+                
+                # Load input values
+                val = tl.load(input_ptr + input_idx, mask=valid, other=float('-inf'))
+                val = val.to(tl.float32)
+                
+                # Update max
+                max_val = tl.maximum(max_val, val)
+    
+    # Compute output indices
+    out_offset = n * (C * OD * OH * OW) + c * (OD * OH * OW) + od * (OH * OW) + oh * OW + ow_offs
+    
+    # Store results
+    tl.store(output_ptr + out_offset, max_val, mask=ow_mask)
+
+
+def kernel_function(x, kernel_size=2, stride=2, padding=0, dilation=1):
+    """
+    3D Max Pooling wrapper function.
+    """
+    # Handle tuple/list parameters
+    if isinstance(kernel_size, (tuple, list)):
+        kernel_size = kernel_size[0]
+    if isinstance(stride, (tuple, list)):
+        stride = stride[0]
+    if isinstance(padding, (tuple, list)):
+        padding = padding[0]
+    if isinstance(dilation, (tuple, list)):
+        dilation = dilation[0]
+    
+    # Ensure input is contiguous
+    x = x.contiguous()
+    
+    # Get input dimensions
+    N, C, D, H, W = x.shape
+    
+    # Get strides
+    stride_n, stride_c, stride_d, stride_h, stride_w = x.stride()
+    
+    # Calculate output dimensions
+    OD = (D + 2 * padding - dilation * (kernel_size - 1) - 1) // stride + 1
+    OH = (H + 2 * padding - dilation * (kernel_size - 1) - 1) // stride + 1
+    OW = (W + 2 * padding - dilation * (kernel_size - 1) - 1) // stride + 1
+    
+    # Allocate output tensor
+    output = torch.empty((N, C, OD, OH, OW), device=x.device, dtype=x.dtype)
+    
+    # Launch configuration
+    BLOCK_OW = 64  # Process 64 output elements along W per program
+    
+    # Total number of programs
+    total_rows = N * C * OD * OH
+    num_ow_blocks = triton.cdiv(OW, BLOCK_OW)
+    grid = (total_rows * num_ow_blocks,)
+    
+    # Launch kernel
+    max_pool3d_kernel_optimized[grid](
+        x,
+        output,
+        N, C, D, H, W,
+        OD, OH, OW,
+        stride_n, stride_c, stride_d, stride_h, stride_w,
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        BLOCK_OW=BLOCK_OW,
+    )
+    
+    return output
+```

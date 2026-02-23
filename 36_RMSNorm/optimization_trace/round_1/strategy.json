@@ -1,0 +1,45 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory bandwidth bound at 82.8% of peak DRAM throughput with severe long scoreboard stalls from memory latency",
+    "reasoning": "The DRAM throughput is at 82.77% of peak (2025 GB/s out of 3900 GB/s), while compute throughput is only 20.4%. The roofline analysis confirms memory as the bottleneck. The kernel performs two full passes over the data (read twice, write once) for RMSNorm, reading 7.3GB and writing 3.7GB. The extremely high long scoreboard stall rate (96.3%) indicates warps are waiting on memory operations to complete.",
+    "root_causes": [
+      {
+        "cause": "Two-pass algorithm requires reading input data twice (once for sum-of-squares reduction, once for normalization), doubling memory traffic",
+        "evidence": [
+          {
+            "metric": "dram__bytes_read.sum",
+            "value": 7286447360,
+            "interpretation": "~7.3GB read, approximately 2x the expected single-pass read for the input tensor"
+          },
+          {
+            "metric": "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+            "value": 82.77,
+            "interpretation": "Near peak memory bandwidth utilization indicates memory-bound execution"
+          }
+        ]
+      },
+      {
+        "cause": "Memory latency hiding is insufficient causing warps to stall waiting for loads",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 96.3,
+            "interpretation": "96.3% of stall cycles are due to waiting on memory operations (L2/DRAM latency)"
+          },
+          {
+            "metric": "l1tex__t_sector_hit_rate.pct",
+            "value": 32.72,
+            "interpretation": "Low L1 cache hit rate means most accesses go to slower L2/DRAM"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Fuse the two passes into a single pass by using shared memory or registers to cache the input data: load each channel's data once, accumulate sum-of-squares in registers, compute inv_rms, then immediately normalize and store without re-reading from global memory",
+        "rationale": "Eliminating the second global memory read pass would reduce DRAM traffic by ~50%, directly addressing the memory bandwidth bottleneck and reducing long scoreboard stalls from memory latency"
+      }
+    ]
+  }
+]

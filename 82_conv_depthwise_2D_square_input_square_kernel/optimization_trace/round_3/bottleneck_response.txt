@@ -1,0 +1,26 @@
+[
+    {
+        "category": "memory",
+        "summary": "Kernel is memory-bound with 99.4% memory SOL but suffers from poor global memory load efficiency at only 24.43%",
+        "reasoning": "The roofline analysis shows Memory SOL at 99.4% while Compute SOL is at 52.7%, clearly indicating a memory-bound kernel. The L1 cache hit rate is excellent at 94.38%, but the global memory load efficiency (smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct) is only 24.43%, meaning roughly 75% of loaded bytes are wasted. This is characteristic of uncoalesced or strided memory access patterns in the depthwise convolution's sliding window operation.",
+        "root_causes": [
+            {
+                "cause": "Poor global memory load efficiency due to strided/uncoalesced access patterns in depthwise convolution",
+                "evidence": [
+                    {"metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct", "value": 24.43, "interpretation": "Only 24.43% of bytes loaded from global memory are actually used, indicating severe memory access inefficiency from non-contiguous access patterns when loading input tiles with padding and stride offsets"},
+                    {"metric": "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed", "value": 99.36, "interpretation": "Memory subsystem is fully saturated, so any inefficiency in access patterns directly impacts performance"}
+                ]
+            },
+            {
+                "cause": "Long scoreboard stalls from memory latency not fully hidden",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 18.37, "interpretation": "18.37% of warp stalls are due to waiting for memory operations to complete, indicating memory latency is not fully hidden despite high occupancy"},
+                    {"metric": "dram__throughput.avg.pct_of_peak_sustained_elapsed", "value": 41.96, "interpretation": "DRAM throughput is only 42% of peak, suggesting the memory subsystem bottleneck is at L1/L2 cache level rather than DRAM bandwidth"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Use shared memory to load contiguous input tiles cooperatively, then have threads read from shared memory for the convolution computation. Load a (BLOCK_H + K-1) x (BLOCK_W + K-1) input tile into shared memory with coalesced accesses, then perform the 3x3 convolution from shared memory.", "rationale": "This converts the strided global memory accesses into coalesced loads followed by fast shared memory reads, improving the effective memory load efficiency from 24% toward 100% and reducing long scoreboard stalls by enabling better latency hiding through the shared memory buffer"}
+        ]
+    }
+]

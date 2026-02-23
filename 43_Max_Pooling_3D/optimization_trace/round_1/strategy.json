@@ -1,0 +1,45 @@
+[
+  {
+    "category": "compute",
+    "summary": "Compute throughput is near saturation at 90.6% but tensor cores are unused, limiting peak performance",
+    "reasoning": "The kernel achieves 90.6% compute SOL with only 41.9% memory SOL, clearly indicating compute-bound behavior. However, tensor core utilization is 0% (sm__inst_executed_pipe_tensor.avg.pct_of_peak_sustained_active = 0), meaning the kernel relies entirely on scalar/vector FP32 operations. The high instruction count (3.2B instructions) combined with 21.24% long scoreboard stalls suggests register pressure and memory latency hiding issues.",
+    "root_causes": [
+      {
+        "cause": "No tensor core utilization despite H100's massive tensor core throughput advantage (1670 TFLOPS FP16 vs 60 TFLOPS FP32)",
+        "evidence": [
+          {
+            "metric": "sm__inst_executed_pipe_tensor.avg.pct_of_peak_sustained_active",
+            "value": 0,
+            "interpretation": "Zero tensor core instructions executed; all compute uses scalar/vector units"
+          },
+          {
+            "metric": "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
+            "value": 0,
+            "interpretation": "Tensor pipe completely idle throughout kernel execution"
+          }
+        ]
+      },
+      {
+        "cause": "High register usage causing occupancy limitations and long scoreboard stalls from memory latency",
+        "evidence": [
+          {
+            "metric": "launch__registers_per_thread",
+            "value": 37,
+            "interpretation": "37 registers per thread limits occupancy to 12 blocks per SM due to register pressure"
+          },
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 21.24,
+            "interpretation": "21% of cycles stalled waiting for memory operations, indicating insufficient latency hiding"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Restructure the kernel to process multiple output elements per thread using vectorized loads (float4) and reduce register pressure by reusing accumulators, potentially lowering BLOCK_W and increasing parallelism across other dimensions",
+        "rationale": "Reducing per-thread register count from 37 to ~32 would increase occupancy limit, while vectorized memory access would improve the 45.34% global load efficiency and better hide the 21% long scoreboard stalls through increased ILP"
+      }
+    ]
+  }
+]

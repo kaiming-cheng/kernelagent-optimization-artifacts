@@ -1,0 +1,45 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory-bound with 99.4% memory SOL, limited by poor global load efficiency and L1 cache pressure",
+    "reasoning": "The roofline analysis confirms this is a memory-bound kernel at 99.4% memory SOL vs 51.5% compute SOL. The L1 throughput is at 99.54% of peak, indicating the memory subsystem is fully saturated. Despite a high L1 hit rate of 94.36%, the global load efficiency is only 24.43%, meaning significant memory bandwidth is wasted on uncoalesced or partial loads. The 18.19% long scoreboard stalls indicate threads are frequently waiting for memory operations to complete.",
+    "root_causes": [
+      {
+        "cause": "Poor global memory load efficiency causing wasted bandwidth",
+        "evidence": [
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 24.43,
+            "interpretation": "Only 24.43% of loaded data is actually used, meaning ~75% of memory bandwidth is wasted on unused bytes per sector"
+          },
+          {
+            "metric": "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+            "value": 41.94,
+            "interpretation": "DRAM throughput is moderate but the effective utilization is much lower due to poor coalescing"
+          }
+        ]
+      },
+      {
+        "cause": "Memory latency stalls from non-contiguous access patterns in depthwise convolution",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 18.19,
+            "interpretation": "18.19% of warp stalls are due to waiting for global memory loads, indicating memory latency is a significant issue"
+          },
+          {
+            "metric": "l1tex__throughput.avg.pct_of_peak_sustained_active",
+            "value": 99.54,
+            "interpretation": "L1 cache is at maximum throughput, creating a bottleneck in the memory hierarchy"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Restructure memory access to load contiguous tiles into shared memory first, then process the 3x3 convolution from shared memory with proper padding to avoid scattered global loads",
+        "rationale": "The current kernel loads each of the 9 convolution positions separately with strided access patterns, causing poor coalescing (24.43% efficiency). Using shared memory as a staging buffer would allow coalesced global loads followed by efficient local accesses, significantly improving the effective memory bandwidth utilization"
+      }
+    ]
+  }
+]

@@ -1,0 +1,27 @@
+[
+    {
+        "category": "memory",
+        "summary": "Kernel is memory-bound at 86.9% DRAM throughput with severe long scoreboard stalls from memory latency",
+        "reasoning": "The kernel achieves 86.9% of peak DRAM bandwidth (2.13 TB/s out of 3.9 TB/s) while compute throughput is only 8.5%. The dominant stall reason is long scoreboard at 59.54%, indicating warps are waiting for global memory operations to complete. With 0% L1 cache hit rate and only 50.7% L2 hit rate, the kernel is streaming data directly from HBM with minimal cache reuse.",
+        "root_causes": [
+            {
+                "cause": "Poor data locality causing excessive DRAM traffic with no L1 cache reuse",
+                "evidence": [
+                    {"metric": "l1tex__t_sector_hit_rate.pct", "value": 0, "interpretation": "Zero L1 cache hits means every access goes to L2 or DRAM"},
+                    {"metric": "lts__t_sector_hit_rate.pct", "value": 50.7, "interpretation": "Only half of L2 accesses hit, causing significant DRAM traffic"},
+                    {"metric": "dram__bytes.sum.per_second", "value": 2126269262506.91, "interpretation": "High DRAM bandwidth consumption at 2.13 TB/s"}
+                ]
+            },
+            {
+                "cause": "Memory latency stalls dominating execution due to insufficient latency hiding",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 59.54, "interpretation": "Nearly 60% of stalls are from waiting on global memory loads"},
+                    {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active", "value": 30.29, "interpretation": "Low occupancy at 30% limits ability to hide memory latency with other warps"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Increase occupancy by reducing register usage (currently 94 registers per thread limits to 5 blocks per SM) through register spilling or smaller tile sizes, and consider fusing the two-pass algorithm into a single pass to halve memory traffic", "rationale": "Higher occupancy provides more warps to hide memory latency, and reducing passes from 2 to 1 in the large-C kernel would cut DRAM traffic in half, directly improving the memory-bound bottleneck"}
+        ]
+    }
+]

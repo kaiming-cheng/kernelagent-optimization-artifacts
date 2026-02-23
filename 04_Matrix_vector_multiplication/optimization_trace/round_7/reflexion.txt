@@ -1,0 +1,26 @@
+```json
+{
+    "was_diagnosis_correct": true,
+    "was_fix_effective": false,
+    "expected_outcome": "Reducing tile sizes and register pressure should increase occupancy, allowing more concurrent blocks per SM, which would improve performance by better hiding latency and utilizing compute resources",
+    "actual_outcome": "Performance degraded by 13.8% (4.0312ms → 4.5872ms). Memory SOL at 47.6% suggests we're now more memory-bound, while compute dropped to only 10.6%",
+    "reasoning": "The diagnosis of high register usage limiting occupancy was correct (168 registers per thread is excessive). However, the fix backfired because reducing tile sizes (BLOCK_SIZE_M: 32→16, BLOCK_SIZE_K: 512→256) decreased arithmetic intensity - each thread now does less compute work per memory access. The Memory SOL of 47.6% vs Compute SOL of 10.6% shows we've shifted from being underutilized to being memory-bound. Smaller tiles mean more memory transactions relative to compute, hurting the compute-to-memory ratio that matrix multiplication relies on for performance.",
+    "lessons": [
+        "Reducing tile sizes to lower register pressure can backfire by reducing arithmetic intensity and making the kernel memory-bound",
+        "High register usage isn't always bad - it may be enabling high arithmetic intensity through larger tiles and data reuse",
+        "Need to balance occupancy improvements against maintaining sufficient work per thread to hide memory latency",
+        "A shift from underutilized to memory-bound (47.6% Memory SOL) indicates the fix overcorrected"
+    ],
+    "avoid_patterns": [
+        "Aggressively reducing BLOCK_SIZE_K when it's being used for data reuse in matrix operations",
+        "Halving multiple tile dimensions simultaneously - try incremental changes",
+        "Prioritizing occupancy over arithmetic intensity in compute-heavy kernels like GEMM"
+    ],
+    "try_patterns": [
+        "Try reducing only BLOCK_SIZE_M while keeping BLOCK_SIZE_K large to maintain arithmetic intensity",
+        "Explore using float16 accumulation or mixed precision to reduce register pressure without shrinking tiles",
+        "Consider BLOCK_SIZE_N adjustments instead of BLOCK_SIZE_K for register reduction",
+        "Try compiler hints like num_stages to enable software pipelining and hide memory latency"
+    ]
+}
+```

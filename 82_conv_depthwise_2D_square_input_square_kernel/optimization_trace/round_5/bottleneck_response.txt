@@ -1,0 +1,26 @@
+[
+    {
+        "category": "memory",
+        "summary": "Kernel is memory-bound with L1 cache at near-peak utilization but poor global memory load efficiency",
+        "reasoning": "The roofline analysis confirms memory bottleneck with 99.4% Memory SOL vs 51.5% Compute SOL. L1 cache throughput is at 99.54% of peak sustained active, indicating the kernel is heavily utilizing the cache hierarchy. However, global memory load efficiency is only 24.43%, meaning most loaded bytes are wasted. The 18.18% long scoreboard stalls indicate warps waiting on memory operations.",
+        "root_causes": [
+            {
+                "cause": "Poor global memory load efficiency due to non-coalesced access patterns in depthwise convolution",
+                "evidence": [
+                    {"metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct", "value": 24.43, "interpretation": "Only 24.43% of loaded bytes are actually used - nearly 75% of memory bandwidth is wasted on unused data within cache sectors"},
+                    {"metric": "dram__throughput.avg.pct_of_peak_sustained_elapsed", "value": 41.94, "interpretation": "DRAM throughput is only 42% of peak, suggesting inefficient memory access patterns despite high L1 utilization"}
+                ]
+            },
+            {
+                "cause": "Memory latency stalls from scattered access patterns across the 3x3 kernel window",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 18.18, "interpretation": "18% of warp cycles stalled waiting for memory operations to complete, indicating memory latency is a significant factor"},
+                    {"metric": "l1tex__t_sector_hit_rate.pct", "value": 94.36, "interpretation": "High L1 hit rate shows data reuse is working, but the scattered loads within the 3x3 window still cause partial sector utilization"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Restructure data layout to NHWC format or use shared memory to stage input tiles, loading contiguous blocks of input data once and reusing across the 3x3 kernel window", "rationale": "NHWC layout makes width-dimension loads contiguous in memory, improving sector utilization from 24% toward 100%. Alternatively, loading a larger input tile into shared memory allows coalesced global loads followed by efficient shared memory access for the sliding window computation"}
+        ]
+    }
+]

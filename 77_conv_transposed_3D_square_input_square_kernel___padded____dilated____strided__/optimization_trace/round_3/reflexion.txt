@@ -1,0 +1,27 @@
+```json
+{
+    "was_diagnosis_correct": true,
+    "was_fix_effective": false,
+    "expected_outcome": "Reducing register pressure should increase occupancy, allowing more blocks per SM to hide latency and improve compute utilization while maintaining or improving overall performance",
+    "actual_outcome": "Performance degraded significantly by 59%, with compute utilization dropping to 21% while memory utilization increased to 92.1%, indicating the kernel became memory-bound instead of improving occupancy effectively",
+    "reasoning": "The diagnosis of high register usage limiting occupancy was likely correct, but the fix implementation was counterproductive. By reducing tile sizes (BLOCK_S/BLOCK_OC), the kernel now processes smaller chunks of work per thread, which increases the ratio of memory accesses to compute operations. The 92.1% memory SOL indicates the kernel is now heavily memory-bound. The smaller tiles mean more global memory transactions relative to the compute work performed, and the benefits of data reuse within registers/shared memory are diminished. The fix traded register pressure for memory bandwidth pressure, which was worse.",
+    "lessons": [
+        "Reducing tile sizes to decrease register usage can backfire by reducing data reuse and increasing memory bandwidth requirements",
+        "High register usage isn't always bad - it often enables data reuse that reduces memory traffic",
+        "Need to balance occupancy improvements against arithmetic intensity degradation",
+        "A kernel with 1 block per SM but high compute efficiency can outperform one with higher occupancy but poor data reuse"
+    ],
+    "avoid_patterns": [
+        "Blindly reducing tile sizes to improve occupancy without considering impact on arithmetic intensity",
+        "Treating register pressure as inherently bad without analyzing what those registers enable",
+        "Making drastic tile size reductions that fundamentally change the memory access pattern"
+    ],
+    "try_patterns": [
+        "Use launch_bounds or maxrregcount to cap registers while keeping tile sizes intact",
+        "Selectively spill only cold values to shared memory rather than reducing tiles",
+        "Consider using float instead of double for intermediate values if precision allows",
+        "Try modest register reductions that improve occupancy to 2 blocks/SM while preserving most data reuse",
+        "Profile the original kernel's memory efficiency before making changes"
+    ]
+}
+```

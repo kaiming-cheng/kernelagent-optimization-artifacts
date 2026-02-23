@@ -1,0 +1,26 @@
+[
+    {
+        "category": "memory",
+        "summary": "Kernel is memory-bound at 86.9% DRAM throughput with severe latency stalls from global memory accesses",
+        "reasoning": "The kernel achieves 86.89% of peak DRAM throughput (2.13 TB/s out of 3.9 TB/s peak) while compute utilization is only 8.46%. The roofline analysis confirms memory bottleneck with 86.9% Memory SOL vs 8.5% Compute SOL. Long scoreboard stalls at 59.5% indicate warps are frequently waiting for global memory operations to complete, and the 0% L1 cache hit rate means no data reuse from L1.",
+        "root_causes": [
+            {
+                "cause": "High memory latency stalls due to global memory access patterns",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 59.5, "interpretation": "59.5% of warp stall cycles are waiting for long-latency memory operations (global/L2), indicating memory latency is the primary bottleneck"},
+                    {"metric": "l1tex__t_sector_hit_rate.pct", "value": 0, "interpretation": "Zero L1 cache hits means every access goes to L2 or DRAM, maximizing memory latency"}
+                ]
+            },
+            {
+                "cause": "Low occupancy limiting latency hiding capability",
+                "evidence": [
+                    {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active", "value": 30.3, "interpretation": "Only 30.3% warp occupancy means insufficient concurrent warps to hide memory latency"},
+                    {"metric": "launch__occupancy_limit_registers", "value": 5, "interpretation": "Register usage (94 registers/thread) limits occupancy to only 5 blocks per SM, severely constraining parallelism"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Reduce register pressure by splitting the 2D tile computation or using smaller BLOCK_W/C_CONST values, and consider using shared memory to cache channel data for reuse across the normalization computation", "rationale": "With 94 registers per thread limiting occupancy to 5 blocks per SM, reducing register count would allow more concurrent warps to hide memory latency. Additionally, using shared memory for the channel dimension data would enable L1 caching and reduce redundant DRAM accesses in the two-pass large_c kernel variant"}
+        ]
+    }
+]

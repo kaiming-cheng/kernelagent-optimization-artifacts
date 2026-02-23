@@ -1,0 +1,55 @@
+[
+  {
+    "category": "underutilized",
+    "summary": "Severe occupancy limitation due to excessive register usage causing long scoreboard stalls",
+    "reasoning": "The kernel achieves only 41.4% memory SOL and 9.2% compute SOL, with active warps at just 6.25% of peak. The primary issue is 168 registers per thread limiting occupancy to only 3 blocks per SM (launch__occupancy_limit_registers=3). This causes 54.64% of warp stalls on long scoreboard, indicating warps are waiting for memory operations to complete with insufficient warps to hide latency.",
+    "root_causes": [
+      {
+        "cause": "Excessive register usage (168 per thread) severely limits occupancy to 3 blocks per SM",
+        "evidence": [
+          {
+            "metric": "launch__registers_per_thread",
+            "value": 168,
+            "interpretation": "Far exceeds optimal register count; H100 allows 255 max but high counts drastically reduce occupancy"
+          },
+          {
+            "metric": "launch__occupancy_limit_registers",
+            "value": 3,
+            "interpretation": "Registers are the limiting factor for occupancy, allowing only 3 blocks per SM"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 6.25,
+            "interpretation": "Only 6.25% of peak warp occupancy achieved, severely limiting latency hiding"
+          }
+        ]
+      },
+      {
+        "cause": "Long memory latency stalls due to insufficient warps to hide DRAM access latency",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 54.64,
+            "interpretation": "Over half of stall cycles are waiting for global memory/L2 operations to complete"
+          },
+          {
+            "metric": "l1tex__t_sector_hit_rate.pct",
+            "value": 0,
+            "interpretation": "Zero L1 cache hit rate means all loads go to L2/DRAM, increasing latency"
+          },
+          {
+            "metric": "lts__t_sector_hit_rate.pct",
+            "value": 2.05,
+            "interpretation": "Very low L2 hit rate (2%) means nearly all accesses go to DRAM"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Reduce BLOCK_SIZE_M from 32 to 16 and BLOCK_SIZE_K from 512 to 256 to decrease register pressure, and increase num_warps to 8 for better occupancy. Consider using tl.dot with smaller tiles to enable tensor core usage.",
+        "rationale": "Smaller block sizes reduce the accumulator and loaded data register footprint. With 168 registers per thread, the 2D tile of BLOCK_SIZE_M\u00d7BLOCK_SIZE_K (32\u00d7512) requires significant register storage. Halving both dimensions could reduce register usage by ~4x, potentially increasing occupancy from 3 to 12+ blocks per SM, providing more warps to hide the 54.64% long scoreboard stalls."
+      }
+    ]
+  }
+]

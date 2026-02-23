@@ -1,0 +1,26 @@
+[
+    {
+        "category": "memory",
+        "summary": "Kernel is memory-bound at 86.9% DRAM throughput with severe long scoreboard stalls from memory latency",
+        "reasoning": "The kernel achieves 86.91% of peak DRAM throughput (2.13 TB/s out of 3.9 TB/s peak), while compute utilization is only 8.47%. The roofline analysis confirms memory as the bottleneck. Long scoreboard stalls at 59.48% indicate warps are frequently waiting for memory operations to complete, and the 0% L1 cache hit rate shows no data reuse, forcing all accesses to go through the memory hierarchy.",
+        "root_causes": [
+            {
+                "cause": "Excessive memory latency stalls due to lack of L1 cache reuse and high long scoreboard stalls",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 59.48, "interpretation": "Nearly 60% of stall cycles are waiting for memory operations, indicating memory latency is the dominant bottleneck"},
+                    {"metric": "l1tex__t_sector_hit_rate.pct", "value": 0, "interpretation": "Zero L1 cache hits means every access goes to L2 or DRAM, maximizing memory latency"}
+                ]
+            },
+            {
+                "cause": "Low occupancy limiting latency hiding capability",
+                "evidence": [
+                    {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active", "value": 30.29, "interpretation": "Only 30% warp occupancy means insufficient warps to hide memory latency through parallelism"},
+                    {"metric": "launch__occupancy_limit_registers", "value": 5, "interpretation": "Register usage (94 per thread) severely limits occupancy to only 5 blocks per SM"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Reduce register pressure by using smaller tile sizes or splitting computation across multiple kernel launches, and increase BLOCK_W to process more elements per thread block to improve data reuse and occupancy", "rationale": "With 94 registers per thread limiting occupancy to 5 blocks/SM, reducing register usage would allow more concurrent warps to hide memory latency. Additionally, increasing BLOCK_W could improve L1 cache utilization by reusing the inv_rms values across more width elements"}
+        ]
+    }
+]

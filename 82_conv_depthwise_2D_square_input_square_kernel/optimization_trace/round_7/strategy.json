@@ -1,0 +1,45 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory-bound with 99.4% memory SOL, limited by poor global memory load efficiency and L1 cache pressure.",
+    "reasoning": "The roofline analysis shows 99.4% memory SOL vs 51.5% compute SOL, confirming memory bandwidth is the bottleneck. Despite 94.36% L1 hit rate, the kernel achieves only 41.93% DRAM throughput efficiency. The critical issue is the 24.43% global memory load efficiency (smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct), indicating severe memory access inefficiency where only ~1/4 of loaded bytes are actually used. Long scoreboard stalls at 18.16% further indicate memory latency issues.",
+    "root_causes": [
+      {
+        "cause": "Uncoalesced global memory loads with only 24.43% load efficiency, meaning 75% of loaded data is wasted",
+        "evidence": [
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 24.43,
+            "interpretation": "Only 24.43% of bytes in each 32-byte sector are used, indicating strided or scattered access patterns in the depthwise convolution"
+          },
+          {
+            "metric": "l1tex__throughput.avg.pct_of_peak_sustained_active",
+            "value": 99.54,
+            "interpretation": "L1 cache is saturated processing inefficient memory requests"
+          }
+        ]
+      },
+      {
+        "cause": "Memory latency stalls from long scoreboard dependencies waiting for global memory loads",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 18.16,
+            "interpretation": "18% of warp cycles stalled waiting for memory operations to complete"
+          },
+          {
+            "metric": "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+            "value": 41.93,
+            "interpretation": "Only 42% of peak DRAM bandwidth achieved despite being memory-bound, suggesting latency hiding is insufficient"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Restructure memory access to load contiguous input tiles into shared memory before computing, using vectorized loads (tl.load with 4-element vectors) along the W dimension to improve coalescing from 24% to near 100%",
+        "rationale": "The current scattered access pattern for depthwise convolution loads overlapping input elements inefficiently. Loading a contiguous tile to shared memory once and reusing it for the 3x3 kernel window would reduce global memory transactions by ~3x and improve load efficiency"
+      }
+    ]
+  }
+]

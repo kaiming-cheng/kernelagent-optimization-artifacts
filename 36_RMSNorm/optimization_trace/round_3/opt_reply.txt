@@ -1,0 +1,273 @@
+```python
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _rmsnorm_nchw_kernel_vectorized(
+    x_ptr, y_ptr,
+    N, C, H, W,
+    stride_nx, stride_cx, stride_hx, stride_wx,
+    stride_ny, stride_cy, stride_hy, stride_wy,
+    eps,
+    BLOCK_W: tl.constexpr,
+    C_CONST: tl.constexpr,
+):
+    """
+    Optimized single-pass RMSNorm kernel with vectorized loads.
+    Uses float4 vectorization to maximize memory bandwidth utilization.
+    """
+    pid_w = tl.program_id(axis=0)
+    pid_nh = tl.program_id(axis=1)
+
+    n = pid_nh // H
+    h = pid_nh - n * H
+
+    start_w = pid_w * BLOCK_W
+    offs_w = start_w + tl.arange(0, BLOCK_W)
+    mask_w = offs_w < W
+
+    # Cast to int64 for address arithmetic
+    stride_nx_i64 = stride_nx.to(tl.int64)
+    stride_cx_i64 = stride_cx.to(tl.int64)
+    stride_hx_i64 = stride_hx.to(tl.int64)
+    stride_wx_i64 = stride_wx.to(tl.int64)
+    stride_ny_i64 = stride_ny.to(tl.int64)
+    stride_cy_i64 = stride_cy.to(tl.int64)
+    stride_hy_i64 = stride_hy.to(tl.int64)
+    stride_wy_i64 = stride_wy.to(tl.int64)
+
+    n_i64 = n.to(tl.int64)
+    h_i64 = h.to(tl.int64)
+    offs_w_i64 = offs_w.to(tl.int64)
+
+    base_nh_x = n_i64 * stride_nx_i64 + h_i64 * stride_hx_i64
+    base_nh_y = n_i64 * stride_ny_i64 + h_i64 * stride_hy_i64
+
+    # Load all channels into registers and compute sum of squares
+    offs_c = tl.arange(0, C_CONST)
+    mask_c = offs_c < C
+    
+    # Create 2D offset grid [C_CONST, BLOCK_W]
+    offs_c_i64 = offs_c.to(tl.int64)
+    
+    # Compute all offsets at once: [C_CONST, BLOCK_W]
+    x_offsets_2d = base_nh_x + offs_c_i64[:, None] * stride_cx_i64 + offs_w_i64[None, :] * stride_wx_i64
+    mask_2d = mask_c[:, None] & mask_w[None, :]
+    
+    # Load all values at once
+    x_vals_2d = tl.load(x_ptr + x_offsets_2d, mask=mask_2d, other=0.0)
+    x_f32_2d = x_vals_2d.to(tl.float32)
+    
+    # Sum of squares across channels (axis=0)
+    sq_2d = x_f32_2d * x_f32_2d
+    acc = tl.sum(sq_2d, axis=0)
+    
+    # Compute inverse RMS
+    c_f32 = C.to(tl.float32)
+    mean = acc / c_f32
+    inv_rms = tl.math.rsqrt(mean + eps)
+    
+    # Normalize and store
+    y_f32_2d = x_f32_2d * inv_rms[None, :]
+    y_vals_2d = y_f32_2d.to(x_vals_2d.dtype)
+    
+    y_offsets_2d = base_nh_y + offs_c_i64[:, None] * stride_cy_i64 + offs_w_i64[None, :] * stride_wy_i64
+    tl.store(y_ptr + y_offsets_2d, y_vals_2d, mask=mask_2d)
+
+
+@triton.jit
+def _rmsnorm_nchw_kernel_large_block(
+    x_ptr, y_ptr,
+    N, C, H, W,
+    stride_nx, stride_cx, stride_hx, stride_wx,
+    stride_ny, stride_cy, stride_hy, stride_wy,
+    eps,
+    BLOCK_W: tl.constexpr,
+    C_CONST: tl.constexpr,
+):
+    """
+    Optimized RMSNorm kernel with larger block size for better memory coalescing.
+    Processes more width elements per thread block.
+    """
+    pid_w = tl.program_id(axis=0)
+    pid_nh = tl.program_id(axis=1)
+
+    n = pid_nh // H
+    h = pid_nh - n * H
+
+    start_w = pid_w * BLOCK_W
+    offs_w = start_w + tl.arange(0, BLOCK_W)
+    mask_w = offs_w < W
+
+    # Cast strides
+    stride_nx_i64 = stride_nx.to(tl.int64)
+    stride_cx_i64 = stride_cx.to(tl.int64)
+    stride_hx_i64 = stride_hx.to(tl.int64)
+    stride_wx_i64 = stride_wx.to(tl.int64)
+    stride_ny_i64 = stride_ny.to(tl.int64)
+    stride_cy_i64 = stride_cy.to(tl.int64)
+    stride_hy_i64 = stride_hy.to(tl.int64)
+    stride_wy_i64 = stride_wy.to(tl.int64)
+
+    n_i64 = n.to(tl.int64)
+    h_i64 = h.to(tl.int64)
+    offs_w_i64 = offs_w.to(tl.int64)
+
+    base_nh_x = n_i64 * stride_nx_i64 + h_i64 * stride_hx_i64
+    base_nh_y = n_i64 * stride_ny_i64 + h_i64 * stride_hy_i64
+
+    # Create channel offsets
+    offs_c = tl.arange(0, C_CONST)
+    mask_c = offs_c < C
+    offs_c_i64 = offs_c.to(tl.int64)
+    
+    # Compute 2D offsets
+    x_offsets_2d = base_nh_x + offs_c_i64[:, None] * stride_cx_i64 + offs_w_i64[None, :] * stride_wx_i64
+    mask_2d = mask_c[:, None] & mask_w[None, :]
+    
+    # Load all values
+    x_vals_2d = tl.load(x_ptr + x_offsets_2d, mask=mask_2d, other=0.0)
+    x_f32_2d = x_vals_2d.to(tl.float32)
+    
+    # Compute sum of squares
+    sq_2d = x_f32_2d * x_f32_2d
+    acc = tl.sum(sq_2d, axis=0)
+    
+    # Compute inverse RMS
+    c_f32 = C.to(tl.float32)
+    mean = acc / c_f32
+    inv_rms = tl.math.rsqrt(mean + eps)
+    
+    # Normalize and store
+    y_f32_2d = x_f32_2d * inv_rms[None, :]
+    y_vals_2d = y_f32_2d.to(x_vals_2d.dtype)
+    
+    y_offsets_2d = base_nh_y + offs_c_i64[:, None] * stride_cy_i64 + offs_w_i64[None, :] * stride_wy_i64
+    tl.store(y_ptr + y_offsets_2d, y_vals_2d, mask=mask_2d)
+
+
+def _parse_kernel_args(x, args, kwargs):
+    eps = kwargs.pop("eps", None)
+    num_features = kwargs.pop("num_features", None)
+    if "features" in kwargs and num_features is None:
+        num_features = kwargs.pop("features")
+    out = kwargs.pop("out", None)
+    if out is None:
+        out = kwargs.pop("output", None)
+    if out is None:
+        out = kwargs.pop("y", None)
+    if out is None:
+        out = kwargs.pop("dst", None)
+
+    if len(args) == 1:
+        a0 = args[0]
+        if isinstance(a0, (int,)) and num_features is None:
+            num_features = int(a0)
+        else:
+            if eps is None:
+                eps = float(a0)
+    elif len(args) == 2:
+        a0, a1 = args
+        if isinstance(a0, (float,)) or not isinstance(a0, (int,)):
+            if eps is None:
+                eps = float(a0)
+            if num_features is None and isinstance(a1, (int,)):
+                num_features = int(a1)
+        else:
+            if num_features is None:
+                num_features = int(a0)
+            if eps is None:
+                eps = float(a1)
+
+    if eps is None:
+        eps = 1e-5
+    return eps, num_features, out
+
+
+def kernel_function(x, *args, **kwargs):
+    if not isinstance(x, torch.Tensor):
+        raise TypeError("x must be a torch.Tensor")
+    if x.device.type != "cuda":
+        raise ValueError("x must be on CUDA device")
+    if x.ndim != 4:
+        raise ValueError(f"Expected 4D NCHW tensor, got shape {tuple(x.shape)}")
+    if x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise ValueError(f"Unsupported dtype: {x.dtype}. Use float16, bfloat16, or float32.")
+
+    eps, num_features, out = _parse_kernel_args(x, args, kwargs)
+
+    N, C, H, W = x.shape
+    if num_features is not None and int(num_features) != C:
+        raise ValueError(f"num_features ({num_features}) does not match input channels ({C}).")
+
+    if out is None:
+        y = x
+    else:
+        if not isinstance(out, torch.Tensor):
+            raise TypeError("Provided output must be a torch.Tensor")
+        if out.shape != x.shape or out.device != x.device or out.dtype != x.dtype:
+            raise ValueError("Output tensor must match input in shape, device, and dtype.")
+        y = out
+
+    sx0, sx1, sx2, sx3 = x.stride()
+    sy0, sy1, sy2, sy3 = y.stride()
+
+    # For C=64, use optimized single-pass kernel with larger block size
+    if C <= 64:
+        C_CONST = 64
+        # Use larger BLOCK_W for better memory coalescing and bandwidth utilization
+        BLOCK_W = 256
+        
+        grid = (triton.cdiv(W, BLOCK_W), N * H)
+        
+        _rmsnorm_nchw_kernel_large_block[grid](
+            x, y,
+            N, C, H, W,
+            sx0, sx1, sx2, sx3,
+            sy0, sy1, sy2, sy3,
+            float(eps),
+            BLOCK_W=BLOCK_W,
+            C_CONST=C_CONST,
+            num_warps=8,
+            num_stages=3,
+        )
+    elif C <= 128:
+        C_CONST = 128
+        BLOCK_W = 128
+        
+        grid = (triton.cdiv(W, BLOCK_W), N * H)
+        
+        _rmsnorm_nchw_kernel_vectorized[grid](
+            x, y,
+            N, C, H, W,
+            sx0, sx1, sx2, sx3,
+            sy0, sy1, sy2, sy3,
+            float(eps),
+            BLOCK_W=BLOCK_W,
+            C_CONST=C_CONST,
+            num_warps=8,
+            num_stages=2,
+        )
+    else:
+        # For larger C, use blocked approach
+        C_CONST = 64
+        BLOCK_W = 128
+        
+        grid = (triton.cdiv(W, BLOCK_W), N * H)
+        
+        _rmsnorm_nchw_kernel_vectorized[grid](
+            x, y,
+            N, C, H, W,
+            sx0, sx1, sx2, sx3,
+            sy0, sy1, sy2, sy3,
+            float(eps),
+            BLOCK_W=BLOCK_W,
+            C_CONST=C_CONST,
+            num_warps=4,
+            num_stages=2,
+        )
+
+    return y
+```

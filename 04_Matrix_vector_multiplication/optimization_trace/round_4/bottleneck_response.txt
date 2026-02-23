@@ -1,0 +1,28 @@
+[
+    {
+        "category": "underutilized",
+        "summary": "Severe register pressure causing extremely low occupancy and long scoreboard stalls",
+        "reasoning": "The kernel achieves only 6.26% warp occupancy with 39.4% memory bandwidth utilization and 9.4% compute utilization. Neither compute nor memory is saturated, indicating the GPU is underutilized. The root cause is excessive register usage (255 registers per thread) limiting occupancy to just 2 warps per SM, combined with 31.75% long scoreboard stalls indicating warps are waiting for memory operations to complete.",
+        "root_causes": [
+            {
+                "cause": "Extreme register pressure limiting occupancy to 2 warps per SM",
+                "evidence": [
+                    {"metric": "launch__registers_per_thread", "value": 255, "interpretation": "Maximum register usage per thread, severely limiting concurrent warps"},
+                    {"metric": "launch__occupancy_limit_registers", "value": 2, "interpretation": "Only 2 warps can run per SM due to register constraints"},
+                    {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active", "value": 6.26, "interpretation": "Only 6.26% of peak warp occupancy achieved, far below optimal"}
+                ]
+            },
+            {
+                "cause": "Long scoreboard stalls from insufficient memory latency hiding",
+                "evidence": [
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 31.75, "interpretation": "31.75% of cycles stalled waiting for global memory operations to complete"},
+                    {"metric": "l1tex__t_sector_hit_rate.pct", "value": 7.8, "interpretation": "Poor L1 cache hit rate of 7.8% means most accesses go to slower memory"},
+                    {"metric": "lts__t_sector_hit_rate.pct", "value": 1.05, "interpretation": "L2 cache hit rate of only 1.05% indicates streaming access pattern with no reuse"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Reduce BLOCK_SIZE_M and BLOCK_SIZE_K to decrease register pressure (e.g., BLOCK_SIZE_M=32, BLOCK_SIZE_K=128), and use explicit num_warps and num_stages parameters to control register allocation while enabling software pipelining for latency hiding", "rationale": "Smaller block sizes reduce the accumulator and intermediate value storage, lowering register count below 255. This allows more concurrent warps for better latency hiding. Adding num_stages enables async memory operations to overlap with compute, reducing long scoreboard stalls."}
+        ]
+    }
+]

@@ -1,0 +1,45 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory-bound with poor memory access efficiency due to scattered 3D pooling access patterns",
+    "reasoning": "The roofline analysis confirms memory bottleneck with 99.1% Memory SOL vs 76.5% Compute SOL. DRAM throughput is at 65.35% of peak, while L1 cache throughput is saturated at 99.21%. The critical issue is the extremely low memory efficiency shown by smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct at only 23.64%, meaning each memory transaction fetches mostly unused data. Long scoreboard stalls at 58.53% indicate warps are frequently waiting for memory operations to complete.",
+    "root_causes": [
+      {
+        "cause": "Poor memory coalescing due to non-contiguous 3D pooling window access patterns",
+        "evidence": [
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 23.64,
+            "interpretation": "Only 23.64% of fetched bytes are actually used, indicating severe memory access inefficiency from scattered 3D window traversal"
+          },
+          {
+            "metric": "l1tex__throughput.avg.pct_of_peak_sustained_active",
+            "value": 99.21,
+            "interpretation": "L1 cache is saturated trying to service inefficient memory requests"
+          }
+        ]
+      },
+      {
+        "cause": "Memory latency stalls dominating execution due to irregular access patterns",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 58.53,
+            "interpretation": "58.53% of warp stalls are due to waiting for memory operations, indicating memory latency is limiting performance"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 51.2,
+            "interpretation": "Only 51.2% warp occupancy suggests insufficient parallelism to hide memory latency"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Restructure the kernel to process data in tiles that maximize spatial locality - load a 3D tile of input into shared memory first, then perform pooling operations from shared memory to improve coalescing and reduce redundant global memory accesses",
+        "rationale": "Loading contiguous input tiles into shared memory will improve global memory coalescing (addressing the 23.64% efficiency), enable data reuse for overlapping pooling windows, and reduce long scoreboard stalls by batching memory operations"
+      }
+    ]
+  }
+]

@@ -1,0 +1,45 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory-bound at 86.8% DRAM throughput with severe long scoreboard stalls from memory latency",
+    "reasoning": "The kernel achieves 86.84% of peak DRAM throughput (2.12 TB/s out of 3.9 TB/s) while compute utilization is only 8.46%. The dominant stall reason is long scoreboard at 59.47%, indicating warps are frequently waiting for global memory operations to complete. With 0% L1 cache hit rate and only 50.68% L2 hit rate, the kernel is not benefiting from cache reuse, forcing most accesses to go to DRAM.",
+    "root_causes": [
+      {
+        "cause": "Poor data locality and cache utilization - L1 hit rate is 0% and L2 hit rate is only 50.68%, causing most memory accesses to hit DRAM",
+        "evidence": [
+          {
+            "metric": "l1tex__t_sector_hit_rate.pct",
+            "value": 0,
+            "interpretation": "No L1 cache reuse - all accesses miss L1 cache"
+          },
+          {
+            "metric": "lts__t_sector_hit_rate.pct",
+            "value": 50.68,
+            "interpretation": "Only half of L2 accesses hit, rest go to DRAM"
+          }
+        ]
+      },
+      {
+        "cause": "Memory latency hiding is insufficient - warps stall waiting for memory with low occupancy limiting latency hiding capability",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 59.47,
+            "interpretation": "Nearly 60% of stalls are from waiting on global memory loads"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 30.27,
+            "interpretation": "Only 30% warp occupancy limits ability to hide memory latency through warp switching"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Reduce register usage (currently 94 per thread) by using smaller data types or restructuring computation to increase occupancy from 5 blocks per SM, enabling more warps to hide memory latency",
+        "rationale": "With launch__occupancy_limit_registers=5, register pressure is the primary occupancy limiter. Reducing from 94 to ~64 registers per thread would allow more concurrent blocks, improving latency hiding through warp-level parallelism"
+      }
+    ]
+  }
+]

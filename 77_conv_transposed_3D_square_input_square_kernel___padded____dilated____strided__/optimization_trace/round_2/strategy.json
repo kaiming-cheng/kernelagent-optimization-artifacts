@@ -1,0 +1,45 @@
+[
+  {
+    "category": "underutilized",
+    "summary": "Kernel suffers from severe underutilization due to low occupancy and memory access inefficiency despite high L1 cache activity",
+    "reasoning": "The roofline analysis shows 91.8% memory SOL, but DRAM throughput is only 0.76% of peak. The actual bottleneck is L1 cache thrashing with 92.11% L1 throughput but extremely poor global load efficiency (6.83% bytes per sector). Warp occupancy is only 24.93%, and significant stalls occur on both short (21.64%) and long (22.58%) scoreboards, indicating the kernel is neither compute nor memory bandwidth bound but rather stalled waiting for data.",
+    "root_causes": [
+      {
+        "cause": "Extremely poor global memory load efficiency causing excessive L1 cache traffic",
+        "evidence": [
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 6.83,
+            "interpretation": "Only 6.83% of loaded bytes are actually used, meaning ~93% of memory transactions are wasted due to uncoalesced access patterns"
+          },
+          {
+            "metric": "l1tex__throughput.avg.pct_of_peak_sustained_active",
+            "value": 92.11,
+            "interpretation": "L1 cache is heavily utilized processing redundant/uncoalesced data requests"
+          }
+        ]
+      },
+      {
+        "cause": "Low occupancy due to high register pressure limiting parallelism",
+        "evidence": [
+          {
+            "metric": "launch__registers_per_thread",
+            "value": 119,
+            "interpretation": "119 registers per thread severely limits occupancy to only 2 blocks per SM due to register constraints"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 24.93,
+            "interpretation": "Only ~25% warp occupancy means most SM resources are idle, unable to hide memory latency"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Restructure data access patterns to improve coalescing - load contiguous Cin channels together and reorganize the spatial loop to access consecutive memory locations. Consider using shared memory to stage input tiles with proper layout transformation.",
+        "rationale": "Improving from 6.83% to even 50% load efficiency would reduce L1 pressure by ~7x, allowing actual DRAM bandwidth to be utilized effectively and reducing scoreboard stalls from waiting on memory operations"
+      }
+    ]
+  }
+]

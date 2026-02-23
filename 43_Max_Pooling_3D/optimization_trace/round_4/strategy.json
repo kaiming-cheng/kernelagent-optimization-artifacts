@@ -1,0 +1,45 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory-bound with poor memory access efficiency causing high L1 cache pressure and long scoreboard stalls",
+    "reasoning": "The roofline analysis confirms memory bottleneck with 99.1% Memory SOL vs 76.5% Compute SOL. DRAM throughput is 65.34% of peak, but L1 cache throughput is at 99.24% of peak sustained active. The critical issue is the low global load efficiency at only 23.64% bytes per sector, indicating severe memory access pattern inefficiency. Additionally, 58.5% of warp stalls are due to long scoreboard waits, indicating memory latency is the dominant stall reason.",
+    "root_causes": [
+      {
+        "cause": "Poor memory coalescing with only 23.64% of loaded bytes being useful data",
+        "evidence": [
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 23.64,
+            "interpretation": "Each 32-byte sector load only provides ~7.5 useful bytes on average, wasting 76% of memory bandwidth due to strided/scattered access patterns from the 3D pooling window iteration"
+          },
+          {
+            "metric": "l1tex__throughput.avg.pct_of_peak_sustained_active",
+            "value": 99.24,
+            "interpretation": "L1 cache is saturated handling the inefficient memory requests"
+          }
+        ]
+      },
+      {
+        "cause": "Memory latency stalls dominating execution time",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 58.5,
+            "interpretation": "Warps spend 58.5% of active time waiting for memory operations to complete, indicating memory latency is the primary bottleneck"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 51.21,
+            "interpretation": "Only 51% warp occupancy, limited by register usage (56 registers per thread allows only 9 blocks per SM), reducing ability to hide memory latency"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Restructure the kernel to process data in tiles that maximize spatial locality - load a 3D tile of input into shared memory, then have multiple threads cooperatively compute pooling results from the shared tile, reducing redundant global memory loads and improving coalescing",
+        "rationale": "The current approach where each thread independently loads its pooling window causes overlapping reads with poor coalescing. Tiling into shared memory allows coalesced loads and data reuse across threads, directly addressing the 23.64% load efficiency and reducing long scoreboard stalls by decreasing global memory traffic"
+      }
+    ]
+  }
+]

@@ -1,0 +1,26 @@
+[
+    {
+        "category": "compute",
+        "summary": "Compute-bound kernel at 80.7% SM throughput without utilizing Tensor Cores",
+        "reasoning": "The kernel achieves 80.7% compute SOL versus only 37.4% memory SOL, clearly indicating compute is the bottleneck. The sm__throughput metric confirms 80.71% of peak compute is utilized, while DRAM throughput is only 16.59% of peak. Despite high warp occupancy (91.6%), the kernel performs no Tensor Core operations (0% tensor pipe utilization), leaving significant FP16/BF16 acceleration potential unused.",
+        "root_causes": [
+            {
+                "cause": "No Tensor Core utilization despite using bfloat16 data type",
+                "evidence": [
+                    {"metric": "sm__inst_executed_pipe_tensor.avg.pct_of_peak_sustained_active", "value": 0, "interpretation": "Zero tensor core instructions executed, missing 10-20x potential speedup for bf16 matrix operations"},
+                    {"metric": "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed", "value": 0, "interpretation": "Tensor pipe completely idle while compute is the bottleneck"}
+                ]
+            },
+            {
+                "cause": "Inefficient memory access pattern with poor global load efficiency",
+                "evidence": [
+                    {"metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct", "value": 56.68, "interpretation": "Only 56.68% of loaded bytes are actually used, indicating uncoalesced or strided memory access patterns"},
+                    {"metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct", "value": 14.97, "interpretation": "15% of cycles stalled waiting for memory operations despite low DRAM utilization, suggesting cache pressure from inefficient access"}
+                ]
+            }
+        ],
+        "recommended_fixes": [
+            {"fix": "Restructure the kernel to use Triton's tl.dot or matrix multiplication primitives that map to Tensor Cores, potentially by reformulating the depthwise convolution as batched matrix operations or using im2col-style transformations", "rationale": "H100 has 1.67 PFLOPS of FP16/BF16 Tensor Core performance versus 60 TFLOPS of FP32 scalar compute. Enabling Tensor Cores could provide 10-20x speedup for the multiply-accumulate operations that dominate this convolution kernel"}
+        ]
+    }
+]

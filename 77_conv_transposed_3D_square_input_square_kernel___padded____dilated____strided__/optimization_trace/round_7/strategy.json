@@ -1,0 +1,45 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is severely bottlenecked by L1 cache memory accesses with poor global memory load efficiency causing long scoreboard stalls.",
+    "reasoning": "The roofline analysis shows 92.8% memory SOL vs 14.8% compute SOL, clearly indicating a memory-bound kernel. The L1 cache throughput is at 93.82% of peak while DRAM throughput is only 1.44%, suggesting the kernel is thrashing L1 cache. The extremely low global load efficiency (7.4% bytes per sector) combined with 55.48% long scoreboard stalls indicates severe memory access pattern issues causing threads to wait for memory operations.",
+    "root_causes": [
+      {
+        "cause": "Extremely poor global memory load efficiency causing wasted memory bandwidth",
+        "evidence": [
+          {
+            "metric": "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.pct",
+            "value": 7.4,
+            "interpretation": "Only 7.4% of loaded bytes are actually used, meaning 92.6% of memory transactions are wasted due to uncoalesced or scattered access patterns"
+          },
+          {
+            "metric": "l1tex__throughput.avg.pct_of_peak_sustained_active",
+            "value": 93.82,
+            "interpretation": "L1 cache is saturated at 93.82% throughput, handling many small inefficient requests"
+          }
+        ]
+      },
+      {
+        "cause": "Long scoreboard stalls from memory dependency waiting",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 55.48,
+            "interpretation": "Over half of warp stall cycles are waiting for memory operations (global/L2 loads) to complete"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 12.48,
+            "interpretation": "Very low warp occupancy of only 12.48% due to high register usage (252 per thread) limiting parallelism to hide memory latency"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Restructure memory access patterns to improve coalescing by loading contiguous chunks of input/weight data into shared memory before processing, and reduce register pressure by splitting the kernel into smaller tiles or using fewer intermediate variables",
+        "rationale": "The 7.4% load efficiency indicates scattered memory accesses that waste bandwidth. Using shared memory as a staging buffer allows coalesced global loads followed by efficient shared memory access. Reducing register usage from 252 to below 128 would double occupancy, providing more warps to hide memory latency and reduce the 55.48% long scoreboard stalls."
+      }
+    ]
+  }
+]

@@ -1,0 +1,50 @@
+[
+  {
+    "category": "memory",
+    "summary": "Kernel is memory-bound at 86.9% DRAM throughput with severe long scoreboard stalls from memory latency",
+    "reasoning": "The kernel achieves 86.93% of peak DRAM bandwidth (2.13 TB/s out of 3.9 TB/s peak) while compute utilization is only 8.47%. The 59.63% long scoreboard stalls indicate warps are frequently waiting for global memory loads to complete. The L1 cache hit rate of 0% shows no data reuse in L1, and the 50.67% L2 hit rate provides only partial benefit. With only 30.25% warp occupancy, there aren't enough warps to hide memory latency effectively.",
+    "root_causes": [
+      {
+        "cause": "Excessive global memory latency stalls due to lack of L1 cache reuse and insufficient occupancy to hide latency",
+        "evidence": [
+          {
+            "metric": "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
+            "value": 59.63,
+            "interpretation": "Nearly 60% of stall cycles are waiting for global memory operations to complete"
+          },
+          {
+            "metric": "l1tex__t_sector_hit_rate.pct",
+            "value": 0,
+            "interpretation": "Zero L1 cache hits means every access goes to L2 or DRAM, increasing latency"
+          },
+          {
+            "metric": "sm__warps_active.avg.pct_of_peak_sustained_active",
+            "value": 30.25,
+            "interpretation": "Low occupancy limits ability to hide memory latency with other warps"
+          }
+        ]
+      },
+      {
+        "cause": "Register pressure limiting occupancy and concurrent warps",
+        "evidence": [
+          {
+            "metric": "launch__registers_per_thread",
+            "value": 94,
+            "interpretation": "94 registers per thread severely limits occupancy (only 5 blocks limited by registers)"
+          },
+          {
+            "metric": "launch__occupancy_limit_registers",
+            "value": 5,
+            "interpretation": "Register usage is the primary occupancy limiter, allowing only 5 blocks per SM"
+          }
+        ]
+      }
+    ],
+    "recommended_fixes": [
+      {
+        "fix": "Reduce register usage by splitting the kernel into smaller functions, using fewer local variables, or enabling register spilling via num_warps tuning. Target <64 registers per thread to double occupancy and better hide memory latency.",
+        "rationale": "Increasing occupancy from 30% to 60%+ would allow more warps to execute while others wait for memory, reducing the impact of the 59.63% long scoreboard stalls and improving overall throughput toward the 13.1% headroom available."
+      }
+    ]
+  }
+]
